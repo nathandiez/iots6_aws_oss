@@ -1,0 +1,122 @@
+---
+# base.yml - Base system setup for IoT infrastructure
+- name: Configure base system requirements for IoT services
+  hosts: iot_servers
+  tasks:
+    # --------------------------------------------------------------------------
+    # Wait for System Readiness (smarter cloud-init check)
+    # --------------------------------------------------------------------------
+    - name: Wait for apt/dpkg locks to be released
+      ansible.builtin.shell: while lsof /var/lib/dpkg/lock-frontend >/dev/null 2>&1; do sleep 5; done
+      changed_when: false
+      timeout: 300  # 5 minute timeout
+
+    - name: Check if cloud-init is done or proceed anyway
+      ansible.builtin.shell: |
+        # Check cloud-init status with timeout
+        if command -v cloud-init >/dev/null 2>&1; then
+          # Wait maximum 2 minutes for cloud-init, then proceed
+          for i in {1..12}; do
+            status=$(cloud-init status 2>/dev/null || echo "unknown")
+            if [ "$status" = "status: done" ] || [ "$status" = "done" ]; then
+              echo "Cloud-init completed successfully"
+              exit 0
+            fi
+            echo "Cloud-init status: $status (attempt $i/12)"
+            sleep 10
+          done
+          echo "Cloud-init still running after 2 minutes, but proceeding with deployment"
+        else
+          echo "Cloud-init not found, proceeding"
+        fi
+        exit 0
+      changed_when: false
+      failed_when: false
+      timeout: 150  # 2.5 minute max timeout
+
+    # --------------------------------------------------------------------------
+    # Docker Installation
+    # --------------------------------------------------------------------------
+    - name: Update apt cache
+      ansible.builtin.apt:
+        update_cache: yes
+        cache_valid_time: 3600
+      become: yes
+
+    - name: Install required dependencies for Docker
+      ansible.builtin.apt:
+        name:
+          - apt-transport-https
+          - ca-certificates
+          - curl
+          - gnupg
+          - lsb-release
+        state: present
+      become: yes
+
+    - name: Add Docker GPG key
+      ansible.builtin.apt_key:
+        url: https://download.docker.com/linux/ubuntu/gpg
+        state: present
+      become: yes
+
+    - name: Add Docker repository
+      ansible.builtin.apt_repository:
+        repo: deb [arch=amd64] https://download.docker.com/linux/ubuntu {{ ansible_distribution_release }} stable
+        state: present
+        filename: docker # Explicit filename
+      become: yes
+
+    - name: Install Docker packages
+      ansible.builtin.apt:
+        name:
+          - docker-ce
+          - docker-ce-cli
+          - containerd.io
+          - docker-compose-plugin
+        state: present
+        update_cache: yes
+      register: docker_install_result
+      until: docker_install_result is succeeded
+      retries: 5
+      delay: 15
+      become: yes
+
+    - name: Make sure Docker service is running and enabled
+      ansible.builtin.service:
+        name: docker
+        state: started
+        enabled: yes
+      become: yes
+
+    - name: Add deployment user to docker group for non-sudo docker commands
+      ansible.builtin.user:
+        name: "{{ ansible_user | default('ubuntu') }}" # Use ansible_user which is 'ubuntu' 
+        groups: docker
+        append: yes
+      become: yes
+      
+    # --------------------------------------------------------------------------
+    # Set up Docker network
+    # --------------------------------------------------------------------------
+    - name: Set up Docker network for IoT services
+      community.docker.docker_network:
+        name: iot_network
+        state: present
+      become: yes
+      
+    # --------------------------------------------------------------------------
+    # Install common tools
+    # --------------------------------------------------------------------------
+    - name: Install common tools and utilities
+      ansible.builtin.apt:
+        name:
+          - htop
+          - tmux
+          - vim
+          - curl
+          - wget
+          - net-tools
+          - postgresql-client  # For database connectivity testing
+        state: present
+      become: yes

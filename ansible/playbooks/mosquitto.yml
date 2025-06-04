@@ -1,0 +1,131 @@
+---
+# mosquitto.yml - Mosquitto MQTT broker deployment
+# Assumes IP is configured via DHCP (cloud-init default or Terraform DHCP)
+- name: Deploy and configure Mosquitto MQTT broker
+  hosts: iot_servers
+  vars:
+    mosquitto_config_dir: /etc/mosquitto
+    mosquitto_data_dir: /var/lib/mosquitto
+    mosquitto_log_dir: /var/log/mosquitto
+    mosquitto_container_name: mosquitto
+
+  tasks:
+    # --------------------------------------------------------------------------
+    # Mosquitto Configuration
+    # --------------------------------------------------------------------------
+    - name: Create Mosquitto configuration directory
+      ansible.builtin.file:
+        path: "{{ mosquitto_config_dir }}"
+        state: directory
+        mode: '0755'
+      become: yes
+
+    - name: Create Mosquitto data directory with correct permissions
+      ansible.builtin.file:
+        path: "{{ mosquitto_data_dir }}"
+        state: directory
+        owner: '1883'  # Mosquitto container user UID
+        group: '1883'  # Mosquitto container user GID
+        mode: '0755'
+      become: yes
+
+    - name: Create Mosquitto log directory with correct permissions
+      ansible.builtin.file:
+        path: "{{ mosquitto_log_dir }}"
+        state: directory
+        owner: '1883'  # Mosquitto container user UID
+        group: '1883'  # Mosquitto container user GID
+        mode: '0755'
+      become: yes
+
+    - name: Deploy Mosquitto configuration
+      ansible.builtin.copy:
+        dest: "{{ mosquitto_config_dir }}/mosquitto.conf"
+        content: |
+          # Mosquitto MQTT Broker Configuration
+
+          # Persistence settings
+          persistence true
+          persistence_location /mosquitto/data
+
+          # Logging
+          log_dest stdout
+          log_dest file /mosquitto/log/mosquitto.log
+          log_type all
+
+          # Network settings
+          listener 1883
+
+          # Security (for development - allowing anonymous access)
+          allow_anonymous true
+
+          # Include additional config files
+          include_dir /mosquitto/config/conf.d
+        mode: '0644'
+      become: yes
+
+    - name: Create conf.d directory for additional config files
+      ansible.builtin.file:
+        path: "{{ mosquitto_config_dir }}/conf.d"
+        state: directory
+        mode: '0755'
+      become: yes
+
+    # --------------------------------------------------------------------------
+    # Mosquitto Docker Container
+    # --------------------------------------------------------------------------
+    - name: Pull Mosquitto Docker image
+      community.docker.docker_image:
+        name: eclipse-mosquitto:latest
+        source: pull
+      become: yes
+
+    - name: Start Mosquitto container
+      community.docker.docker_container:
+        name: "{{ mosquitto_container_name }}"
+        image: eclipse-mosquitto:latest
+        state: started
+        restart_policy: unless-stopped
+        networks:
+          - name: iot_network
+        published_ports:
+          - "1883:1883"  # MQTT
+          - "9001:9001"  # WebSockets (if needed)
+        volumes:
+          # Config mounts are read-write to allow entrypoint script chown
+          - "{{ mosquitto_config_dir }}/mosquitto.conf:/mosquitto/config/mosquitto.conf"
+          - "{{ mosquitto_config_dir }}/conf.d:/mosquitto/config/conf.d"
+          # Data and log volumes remain read-write
+          - "{{ mosquitto_data_dir }}:/mosquitto/data:rw"
+          - "{{ mosquitto_log_dir }}:/mosquitto/log:rw"
+        restart: yes
+      become: yes
+
+    # --------------------------------------------------------------------------
+    # Verification
+    # --------------------------------------------------------------------------
+    - name: Install mosquitto-clients for testing (on host)
+      ansible.builtin.apt:
+        name: mosquitto-clients
+        state: present
+      become: yes
+
+    - name: Wait a few seconds for Mosquitto service inside container to stabilize
+      ansible.builtin.pause:
+        seconds: 5
+
+    - name: Verify Mosquitto is running (via docker exec)
+      ansible.builtin.command: docker exec {{ mosquitto_container_name }} mosquitto_sub -h localhost -t 'test/topic' -C 1 -W 3 -d
+      register: mqtt_test_exec
+      changed_when: false
+      failed_when: false
+      ignore_errors: true
+      become: yes
+
+    - name: Check verification command output for success
+      ansible.builtin.set_fact:
+        mqtt_connected: "{{ 'CONNACK' in mqtt_test_exec.stdout }}"
+
+    - name: Show MQTT connection status
+      ansible.builtin.debug:
+        msg: "MQTT broker status: {{ 'Connected successfully (verified via docker exec)' if mqtt_connected else 'Connection failed - check container logs or docker exec command output' }}"

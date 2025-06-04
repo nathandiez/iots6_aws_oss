@@ -1,0 +1,105 @@
+---
+# timescaledb.yml - TimescaleDB deployment playbook
+- name: Deploy and configure TimescaleDB
+  hosts: iot_servers
+  vars:
+    timescaledb_container_name: timescaledb
+    postgres_db: iotdb
+    postgres_user: iotuser
+    postgres_password: iotpass
+    postgres_port: 5432
+    timescale_data_dir: /home/{{ ansible_user | default('nathan') }}/timescaledb_data
+    schema_dir: /home/{{ ansible_user | default('nathan') }}/timescaledb_schema
+
+  tasks:
+    - name: Create directories
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: directory
+        mode: '0755'
+      with_items:
+        - "{{ timescale_data_dir }}"
+        - "{{ schema_dir }}"
+      become: yes
+
+    - name: Create database initialization script
+      ansible.builtin.copy:
+        dest: "{{ schema_dir }}/init-db.sql"
+        content: |
+          CREATE EXTENSION IF NOT EXISTS timescaledb CASCADE;
+          CREATE TABLE IF NOT EXISTS sensor_data (
+              time TIMESTAMPTZ NOT NULL,
+              device_id TEXT NOT NULL,
+              event_type TEXT NOT NULL,
+              temperature FLOAT,
+              humidity FLOAT,
+              pressure FLOAT,
+              temp_sensor_type TEXT,
+              motion TEXT,
+              switch TEXT,
+              version TEXT,
+              uptime TEXT,
+              wifi_rssi INTEGER,
+              uptime_seconds INTEGER,
+              fan_pwm INTEGER,
+              fans_active_level INTEGER,
+              sensor_type TEXT
+          );
+          SELECT create_hypertable('sensor_data', 'time', if_not_exists => TRUE);
+          CREATE INDEX IF NOT EXISTS idx_sensor_data_device_id ON sensor_data(device_id);
+          CREATE INDEX IF NOT EXISTS idx_sensor_data_event_type ON sensor_data(event_type);
+          CREATE INDEX IF NOT EXISTS idx_sensor_data_sensor_type ON sensor_data(sensor_type);
+          GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA public TO iotuser;
+          GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public TO iotuser;
+          GRANT ALL PRIVILEGES ON SCHEMA public TO iotuser;
+        mode: '0644'
+      become: yes
+
+    - name: Start TimescaleDB container
+      community.docker.docker_container:
+        name: "{{ timescaledb_container_name }}"
+        image: timescale/timescaledb:latest-pg14
+        state: started
+        restart_policy: unless-stopped
+        networks:
+          - name: iot_network
+        ports:
+          - "{{ postgres_port }}:5432"
+        env:
+          POSTGRES_DB: "{{ postgres_db }}"
+          POSTGRES_USER: "{{ postgres_user }}"
+          POSTGRES_PASSWORD: "{{ postgres_password }}"
+          TIMESCALEDB_TELEMETRY: "off"
+        volumes:
+          - "{{ timescale_data_dir }}:/var/lib/postgresql/data"
+          - "{{ schema_dir }}/init-db.sql:/docker-entrypoint-initdb.d/init-db.sql"
+      become: yes
+
+    - name: Install PostgreSQL client
+      ansible.builtin.apt:
+        name: postgresql-client
+        state: present
+      become: yes
+
+    - name: Wait for TimescaleDB to be ready
+      ansible.builtin.shell: >
+        PGPASSWORD={{ postgres_password }} psql -h localhost -U {{ postgres_user }} -d {{ postgres_db }} -c "SELECT 1;" > /dev/null 2>&1
+      register: db_ready
+      until: db_ready.rc == 0
+      retries: 20
+      delay: 5
+      changed_when: false
+      become: yes
+
+    - name: Verify TimescaleDB setup
+      ansible.builtin.shell: >
+        PGPASSWORD={{ postgres_password }} psql -h localhost -U {{ postgres_user }} -d {{ postgres_db }} -c "
+        SELECT hypertable_name FROM timescaledb_information.hypertables WHERE hypertable_name = 'sensor_data';
+        SELECT indexname FROM pg_indexes WHERE tablename = 'sensor_data' AND indexname IN ('idx_sensor_data_device_id', 'idx_sensor_data_event_type', 'idx_sensor_data_sensor_type');"
+      register: verification
+      failed_when: verification.rc != 0 or 'sensor_data' not in verification.stdout
+      become: yes
+
+    - name: Display verification results
+      ansible.builtin.debug:
+        msg: "TimescaleDB successfully deployed and configured. Table and indexes verified."

@@ -1,0 +1,124 @@
+---
+# iot_service.yml - IoT Service deployment playbook
+- name: Deploy and configure IoT Service
+  hosts: iot_servers
+  vars:
+    iot_service_dir: /home/{{ ansible_user | default('nathan') }}/iot_service
+    iot_service_container_name: iot_service
+    # Database connection details
+    postgres_db: iotdb
+    postgres_user: iotuser
+    postgres_password: iotpass  # Consider using Ansible Vault for sensitive data
+    # MQTT connection details (using container name instead of localhost)
+    mqtt_broker: mosquitto
+    mqtt_port: "1883"  # Note: String with quotes
+
+  tasks:
+    # --------------------------------------------------------------------------
+    # Setup Service Directory and Files
+    # --------------------------------------------------------------------------
+    - name: Create IoT service directory
+      ansible.builtin.file:
+        path: "{{ iot_service_dir }}"
+        state: directory
+        mode: '0755'
+        owner: "{{ ansible_user | default('nathan') }}"
+        group: "{{ ansible_user | default('nathan') }}"
+
+    - name: Copy IoT service Python script
+      ansible.builtin.copy:
+        src: ../../services/iot_service/iot_service.py
+        dest: "{{ iot_service_dir }}/iot_service.py"
+        mode: '0755'
+        owner: "{{ ansible_user | default('nathan') }}"
+        group: "{{ ansible_user | default('nathan') }}"
+
+    - name: Copy Dockerfile
+      ansible.builtin.copy:
+        src: ../../services/iot_service/Dockerfile
+        dest: "{{ iot_service_dir }}/Dockerfile"
+        mode: '0644'
+        owner: "{{ ansible_user | default('nathan') }}"
+        group: "{{ ansible_user | default('nathan') }}"
+
+    - name: Copy requirements.txt
+      ansible.builtin.copy:
+        src: ../../services/iot_service/requirements.txt
+        dest: "{{ iot_service_dir }}/requirements.txt"
+        mode: '0644'
+        owner: "{{ ansible_user | default('nathan') }}"
+        group: "{{ ansible_user | default('nathan') }}"
+
+    # --------------------------------------------------------------------------
+    # Build and Deploy Docker Container
+    # --------------------------------------------------------------------------
+    - name: Build IoT service Docker image
+      community.docker.docker_image:
+        name: local/iot_service
+        build:
+          path: "{{ iot_service_dir }}"
+          pull: yes
+          nocache: yes
+        source: build
+        state: present
+        force_source: yes
+      become: yes
+
+    - name: Check if Mosquitto container is in the network
+      ansible.builtin.command: docker network inspect iot_network
+      register: network_inspect
+      changed_when: false
+      become: yes
+
+    - name: Add Mosquitto container to iot_network if needed
+      ansible.builtin.command: docker network connect iot_network mosquitto
+      when: "'mosquitto' not in network_inspect.stdout"
+      ignore_errors: yes  # In case container doesn't exist yet
+      become: yes
+
+    - name: Start IoT service container
+      community.docker.docker_container:
+        name: "{{ iot_service_container_name }}"
+        image: local/iot_service
+        state: started
+        restart_policy: unless-stopped
+        networks:
+          - name: iot_network
+        env:
+          POSTGRES_DB: "{{ postgres_db }}"
+          POSTGRES_USER: "{{ postgres_user }}"
+          POSTGRES_PASSWORD: "{{ postgres_password }}"
+          POSTGRES_HOST: "timescaledb"
+          POSTGRES_PORT: "5432"
+          MQTT_BROKER: "{{ mqtt_broker }}"
+          MQTT_PORT: "{{ mqtt_port }}"
+        restart: yes
+      become: yes
+
+    # --------------------------------------------------------------------------
+    # Verification
+    # --------------------------------------------------------------------------
+    - name: Wait for IoT service to start
+      ansible.builtin.pause:
+        seconds: 5
+
+    - name: Check if IoT service container is running
+      community.docker.docker_container_info:
+        name: "{{ iot_service_container_name }}"
+      register: container_info
+      become: yes
+
+    - name: Verify container state
+      ansible.builtin.debug:
+        msg: "IoT service container state: {{ container_info.container.State.Status }}"
+      failed_when: container_info.container.State.Status != 'running'
+
+    - name: Check IoT service logs
+      ansible.builtin.command: docker logs {{ iot_service_container_name }} --tail 10
+      register: container_logs
+      changed_when: false
+      become: yes
+
+    - name: Display IoT service logs
+      ansible.builtin.debug:
+        msg: "{{ container_logs.stdout_lines }}"

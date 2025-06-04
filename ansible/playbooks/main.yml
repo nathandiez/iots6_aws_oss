@@ -1,0 +1,17 @@
+---
+# main.yml - Main playbook for deploying all IoT services
+
+- name: Include Base setup (Docker installation)
+  import_playbook: base.yml
+
+- name: Include TimescaleDB setup
+  import_playbook: timescaledb.yml
+
+- name: Include Mosquitto MQTT broker setup
+  import_playbook: mosquitto.yml
+
+- name: Include IoT Service setup
+  import_playbook: iot_service.yml
+
+- name: Include Grafana dashboard setup
+  import_playbook: grafana.yml
