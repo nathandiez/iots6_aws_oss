@@ -57,6 +57,25 @@ fi
 
 echo "Using IP: $IP"
 
+# Wait for SSH to actually be available
+echo "Testing SSH connectivity..."
+while [ $attempt -lt $max_attempts ]; do
+  if ssh -i ~/.ssh/id_rsa_aws -o StrictHostKeyChecking=no -o BatchMode=yes -o ConnectTimeout=10 ubuntu@"$IP" echo "SSH Ready" 2>/dev/null; then
+    echo "✅ SSH is available!"
+    break
+  fi
+  
+  attempt=$((attempt + 1))
+  echo "⏳ SSH attempt $attempt/$max_attempts failed, waiting 10 seconds..."
+  
+  if [ $attempt -eq $max_attempts ]; then
+    echo "❌ SSH timeout after $max_attempts attempts"
+    exit 1
+  fi
+  
+  sleep 10
+done
+
 # Update Ansible inventory with correct IP
 # Create hosts file directory if it doesn't exist
 mkdir -p ../ansible/inventory
@@ -69,3 +88,6 @@ awiots6 ansible_host=$IP
 ansible_python_interpreter=/usr/bin/python3
 ansible_user=ubuntu
 ansible_ssh_private_key_file=~/.ssh/id_rsa_aws
+EOF
+
+echo "✅ SSH ready and inventory updated"

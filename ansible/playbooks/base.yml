@@ -7,9 +7,25 @@
     # Wait for System Readiness (smarter cloud-init check)
     # --------------------------------------------------------------------------
     - name: Wait for apt/dpkg locks to be released
-      ansible.builtin.shell: while lsof /var/lib/dpkg/lock-frontend >/dev/null 2>&1; do sleep 5; done
+      ansible.builtin.shell: |
+        echo "Waiting for system package manager to become available..."
+        for i in {1..120}; do
+          if ! lsof /var/lib/dpkg/lock-frontend >/dev/null 2>&1 && \
+             ! lsof /var/lib/apt/lists/lock >/dev/null 2>&1 && \
+             ! lsof /var/cache/apt/archives/lock >/dev/null 2>&1 && \
+             ! pgrep -x apt-get >/dev/null 2>&1 && \
+             ! pgrep -x dpkg >/dev/null 2>&1 && \
+             ! pgrep -x unattended-upgrade >/dev/null 2>&1; then
+            echo "Package manager is now available!"
+            exit 0
+          fi
+          echo "Attempt $i/120: Package manager busy (waiting 5 seconds)..."
+          sleep 5
+        done
+        echo "Timeout waiting for package manager, but proceeding..."
+        exit 0
       changed_when: false
-      timeout: 300  # 5 minute timeout
+      timeout: 650  # 10+ minute timeout
 
     - name: Check if cloud-init is done or proceed anyway
       ansible.builtin.shell: |
@@ -53,6 +69,10 @@
           - lsb-release
         state: present
       become: yes
+      register: deps_install_result
+      until: deps_install_result is succeeded
+      retries: 10
+      delay: 30
 
     - name: Add Docker GPG key
       ansible.builtin.apt_key:

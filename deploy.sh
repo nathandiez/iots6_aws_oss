@@ -82,7 +82,7 @@ $TARGET_HOSTNAME ansible_host=$IP
 
 [all:vars]
 ansible_python_interpreter=/usr/bin/python3
-ansible_user=nathan
+ansible_user=ubuntu
 ansible_ssh_private_key_file=~/.ssh/id_rsa_aws
 EOF
 
