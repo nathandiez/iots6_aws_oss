@@ -1,0 +1,115 @@
+# IoT Stack Configuration
+global:
+  namespace: iots6
+
+# TimescaleDB Configuration
+timescaledb:
+  enabled: true
+  image:
+    repository: timescale/timescaledb
+    tag: "latest-pg14"
+    pullPolicy: IfNotPresent
+  
+  service:
+    type: ClusterIP
+    port: 5432
+  
+  persistence:
+    enabled: true
+    storageClass: "gp3"
+    size: 10Gi
+  
+  database:
+    name: iotdb
+    user: iotuser
+    # Password will be generated automatically
+    existingSecret: ""
+  
+  resources:
+    requests:
+      memory: "256Mi"
+      cpu: "250m"
+    limits:
+      memory: "512Mi"
+      cpu: "500m"
+
+# Mosquitto MQTT Configuration  
+mosquitto:
+  enabled: true
+  image:
+    repository: eclipse-mosquitto
+    tag: "2.0"
+    pullPolicy: IfNotPresent
+    
+  service:
+    type: ClusterIP
+    port: 1883
+    
+  persistence:
+    enabled: true
+    storageClass: "gp3"
+    size: 2Gi
+    
+  resources:
+    requests:
+      memory: "64Mi"
+      cpu: "100m"
+    limits:
+      memory: "128Mi" 
+      cpu: "200m"
+
+# Grafana Configuration
+grafana:
+  enabled: true
+  image:
+    repository: grafana/grafana
+    tag: "latest"
+    pullPolicy: IfNotPresent
+    
+  service:
+    type: LoadBalancer
+    port: 3000
+    
+  persistence:
+    enabled: true
+    storageClass: "gp3"
+    size: 2Gi
+    
+  admin:
+    user: admin
+    # Password will be generated automatically
+    existingSecret: ""
+    
+  resources:
+    requests:
+      memory: "128Mi"
+      cpu: "100m"
+    limits:
+      memory: "256Mi"
+      cpu: "250m"
+
+# IoT Service Configuration
+iotService:
+  enabled: true
+  image:
+    repository: nathandiez12/iot-service
+    tag: "latest"
+    pullPolicy: IfNotPresent
+    
+  service:
+    type: ClusterIP
+    port: 8080
+    
+  resources:
+    requests:
+      memory: "128Mi"
+      cpu: "100m"
+    limits:
+      memory: "256Mi"
+      cpu: "200m"
+      
+  # Environment-specific configs
+  env:
+    LOG_LEVEL: "INFO"
+    MQTT_BROKER: "mosquitto:1883"
+    DB_HOST: "timescaledb:5432"

@@ -1,0 +1,92 @@
+{{- if .Values.mosquitto.enabled }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: mosquitto-config
+  namespace: {{ .Values.global.namespace }}
+data:
+  mosquitto.conf: |
+    listener 1883
+    allow_anonymous true
+    persistence true
+    persistence_location /mosquitto/data/
+
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: mosquitto-pvc
+  namespace: {{ .Values.global.namespace }}
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: {{ .Values.mosquitto.persistence.storageClass }}
+  resources:
+    requests:
+      storage: {{ .Values.mosquitto.persistence.size }}
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mosquitto
+  namespace: {{ .Values.global.namespace }}
+  labels:
+    app: mosquitto
+    chart: {{ include "iot-stack-chart.chart" . }}
+    release: {{ .Release.Name }}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: mosquitto
+      release: {{ .Release.Name }}
+  template:
+    metadata:
+      labels:
+        app: mosquitto
+        release: {{ .Release.Name }}
+    spec:
+      containers:
+      - name: mosquitto
+        image: "{{ .Values.mosquitto.image.repository }}:{{ .Values.mosquitto.image.tag }}"
+        imagePullPolicy: {{ .Values.mosquitto.image.pullPolicy }}
+        ports:
+        - containerPort: {{ .Values.mosquitto.service.port }}
+        volumeMounts:
+        - name: mosquitto-config
+          mountPath: /mosquitto/config
+        - name: mosquitto-data
+          mountPath: /mosquitto/data
+        resources:
+          {{- toYaml .Values.mosquitto.resources | nindent 10 }}
+      volumes:
+      - name: mosquitto-config
+        configMap:
+          name: mosquitto-config
+      - name: mosquitto-data
+        persistentVolumeClaim:
+          claimName: mosquitto-pvc
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mosquitto
+  namespace: {{ .Values.global.namespace }}
+  labels:
+    app: mosquitto
+    chart: {{ include "iot-stack-chart.chart" . }}
+    release: {{ .Release.Name }}
+spec:
+  type: {{ .Values.mosquitto.service.type }}
+  ports:
+  - port: {{ .Values.mosquitto.service.port }}
+    targetPort: {{ .Values.mosquitto.service.port }}
+    protocol: TCP
+    name: mqtt
+  selector:
+    app: mosquitto
+    release: {{ .Release.Name }}
+{{- end }}
