@@ -3,6 +3,7 @@ terraform.tfstate*
 .terraform/
 .terraform.lock.hcl
 *.tfvars
+*.auto.tfvars
 
 # Environment and secrets
 .env
@@ -16,9 +17,18 @@ secrets/
 id_rsa*
 *.pub
 
+# Kubernetes config (safety net)
+kubeconfig*
+*.kubeconfig
+.kube/
+
 # Ansible temporary files
 *.retry
 ansible.log
+
+# ArgoCD/Helm secrets (if any)
+values-secrets.yaml
+*-secrets.yaml
 
 # Logs and temporary files
 *.log
@@ -63,3 +73,8 @@ node_modules/
 # Local development
 local/
 development/
+
+# Temporary scripts or notes
+scratch/
+notes/
+TODO.md

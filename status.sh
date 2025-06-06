@@ -1,6 +1,13 @@
 #!/usr/bin/env bash
-# status.sh - Check status of both VM and AKS deployments
+# status.sh - Check status of both VM and EKS deployments
 set -e
+
+# Load environment variables
+if [[ -f .env ]]; then
+  source .env
+else
+  echo "⚠️  Warning: .env file not found. Some values may not display correctly."
+fi
 
 echo "=========================================="
 echo "IoTS6 Deployment Status Check"
@@ -21,10 +28,10 @@ if [[ -d "$VM_DIR" && -f "$VM_DIR/terraform.tfstate" ]]; then
     echo "✅ VM Active: $VM_NAME"
     echo "   IP: $VM_IP"
     echo "   Services:"
-    echo "   • TimescaleDB: postgresql://iotuser:iotpass@$VM_IP:5432/iotdb"
+    echo "   • TimescaleDB: postgresql://${POSTGRES_USER:-iotuser}:***@$VM_IP:5432/${POSTGRES_DB:-iotdb}"
     echo "   • MQTT: mqtt://$VM_IP:1883"
     echo "   • Grafana: http://$VM_IP:3000"
-    echo "   • SSH: nathan@$VM_IP"
+    echo "   • SSH: ${SSH_USER:-ec2-user}@$VM_IP"
     
     # Test if we can reach the VM
     if ping -c 1 -W 2 "$VM_IP" &>/dev/null; then
@@ -43,20 +50,18 @@ fi
 
 echo ""
 
-# Check AKS deployment
-echo "☸️  AKS Deployment Status:"
+# Check EKS deployment
+echo "☸️  EKS Deployment Status:"
 echo "----------------------------------------"
 
-AKS_DIR="terraform-aks"
-if [[ -d "$AKS_DIR" && -f "$AKS_DIR/terraform.tfstate" ]]; then
-  cd "$AKS_DIR"
+EKS_DIR="terraform-eks"
+if [[ -d "$EKS_DIR" && -f "$EKS_DIR/terraform.tfstate" ]]; then
+  cd "$EKS_DIR"
   
   CLUSTER_NAME=$(terraform output -raw cluster_name 2>/dev/null || echo "")
-  RESOURCE_GROUP=$(terraform output -raw resource_group_name 2>/dev/null || echo "")
   
   if [[ -n "$CLUSTER_NAME" && "$CLUSTER_NAME" != "null" ]]; then
-    echo "✅ AKS Cluster Active: $CLUSTER_NAME"
-    echo "   Resource Group: $RESOURCE_GROUP"
+    echo "✅ EKS Cluster Active: $CLUSTER_NAME"
     
     # Check if kubectl can access the cluster
     if kubectl get nodes &>/dev/null; then
@@ -68,20 +73,16 @@ if [[ -d "$AKS_DIR" && -f "$AKS_DIR/terraform.tfstate" ]]; then
       
       echo "   📊 Nodes: $READY_NODES/$NODE_COUNT ready"
       
-      # Check for deployments
-      echo "   📦 Deployed Services:"
-      DEPLOYMENTS=$(kubectl get deployments --all-namespaces --no-headers 2>/dev/null | wc -l)
-      if [[ $DEPLOYMENTS -gt 0 ]]; then
-        kubectl get deployments --all-namespaces --no-headers 2>/dev/null | while read namespace name ready uptodate available age; do
-          echo "     • $name (namespace: $namespace) - $ready ready"
-        done
-      else
-        echo "     • No services deployed yet"
+      # Check for ArgoCD
+      if kubectl get namespace argocd &>/dev/null; then
+        echo "   🔄 ArgoCD: Deployed"
+        APPS=$(kubectl get applications -n argocd --no-headers 2>/dev/null | wc -l)
+        echo "     • Applications: $APPS"
       fi
       
       # Check for services with external IPs
       echo "   🌐 External Services:"
-      kubectl get services --all-namespaces --no-headers 2>/dev/null | grep -E "(LoadBalancer|NodePort)" | while read namespace name type cluster_ip external_ip ports age; do
+      kubectl get services --all-namespaces --no-headers 2>/dev/null | grep -E "(LoadBalancer)" | while read namespace name type cluster_ip external_ip ports age; do
         if [[ "$external_ip" != "<none>" && "$external_ip" != "<pending>" ]]; then
           echo "     • $name: $external_ip"
         fi
@@ -91,18 +92,18 @@ if [[ -d "$AKS_DIR" && -f "$AKS_DIR/terraform.tfstate" ]]; then
       echo "   🔴 kubectl: Cannot connect to cluster"
     fi
   else
-    echo "❌ AKS: Not deployed or no valid cluster name"
+    echo "❌ EKS: Not deployed or no valid cluster name"
   fi
   
   cd ..
 else
-  echo "❌ AKS: No deployment found"
+  echo "❌ EKS: No deployment found"
 fi
 
 echo ""
 echo "=========================================="
 echo "Commands:"
 echo "🖥️  VM: ./deploy.sh | ./destroy.sh | ./taillogs.sh"
-echo "☸️  AKS: ./deploy-aks.sh | ./destroy-aks.sh"
+echo "☸️  EKS: ./deploy-eks.sh | ./destroy-eks.sh"
 echo "📊 Status: ./status.sh"
 echo "=========================================="
