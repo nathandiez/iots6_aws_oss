@@ -1,0 +1,96 @@
+# IoT Stack Configuration - Production
+global:
+  namespace: iots6-prod
+
+# TimescaleDB Configuration
+timescaledb:
+  enabled: true
+  image:
+    repository: timescale/timescaledb
+    tag: "latest-pg14"
+    pullPolicy: IfNotPresent
+  service:
+    type: ClusterIP
+    port: 5432
+  persistence:
+    enabled: true
+    storageClass: "gp3"
+    size: 50Gi  # Large for production
+  database:
+    name: iotdb
+    user: iotuser
+  resources:
+    requests:
+      memory: "1Gi"  # Production resources
+      cpu: "500m"
+    limits:
+      memory: "2Gi"
+      cpu: "1000m"
+
+# Mosquitto MQTT Configuration  
+mosquitto:
+  enabled: true
+  image:
+    repository: eclipse-mosquitto
+    tag: "2.0"
+    pullPolicy: IfNotPresent
+  service:
+    type: LoadBalancer  # External access for production
+    port: 1883
+  persistence:
+    enabled: true
+    storageClass: "gp3"
+    size: 10Gi
+  resources:
+    requests:
+      memory: "256Mi"
+      cpu: "250m"
+    limits:
+      memory: "512Mi" 
+      cpu: "500m"
+
+# Grafana Configuration
+grafana:
+  enabled: true
+  image:
+    repository: grafana/grafana
+    tag: "latest"
+    pullPolicy: IfNotPresent
+  service:
+    type: LoadBalancer  # External access for production
+    port: 3000
+  persistence:
+    enabled: true
+    storageClass: "gp3"
+    size: 10Gi
+  admin:
+    user: admin
+  resources:
+    requests:
+      memory: "512Mi"
+      cpu: "250m"
+    limits:
+      memory: "1Gi"
+      cpu: "500m"
+
+# IoT Service Configuration
+iotService:
+  enabled: true
+  image:
+    repository: nathandiez12/iot-service
+    tag: "latest"
+    pullPolicy: IfNotPresent
+  service:
+    type: ClusterIP
+    port: 8080
+  resources:
+    requests:
+      memory: "256Mi"
+      cpu: "250m"
+    limits:
+      memory: "512Mi"
+      cpu: "500m"
+  env:
+    LOG_LEVEL: "INFO"  # Less verbose for production
+    MQTT_BROKER: "mosquitto:1883"
+    DB_HOST: "timescaledb:5432"

@@ -1,0 +1,45 @@
+apiVersion: argoproj.io/v1alpha1
+kind: ApplicationSet
+metadata:
+  name: iot-stack-environments
+  namespace: argocd
+spec:
+  generators:
+  - list:
+      elements:
+      - name: dev
+        namespace: iots6-dev
+        cluster: https://kubernetes.default.svc
+        valuesFile: values-dev.yaml
+      - name: staging  
+        namespace: iots6-staging
+        cluster: https://kubernetes.default.svc
+        valuesFile: values.yaml
+      - name: prod
+        namespace: iots6-prod
+        cluster: https://kubernetes.default.svc
+        valuesFile: values-prod.yaml
+  template:
+    metadata:
+      name: 'iot-stack-{{name}}'
+    spec:
+      project: default
+      source:
+        repoURL: https://github.com/nathandiez/iots6_aws_oss.git
+        targetRevision: HEAD
+        path: iot-stack-chart
+        helm:
+          valueFiles:
+          - '{{valuesFile}}'
+          values: |
+            global:
+              namespace: '{{namespace}}'
+      destination:
+        server: '{{cluster}}'
+        namespace: '{{namespace}}'
+      syncPolicy:
+        automated:
+          prune: true
+          selfHeal: true
+        syncOptions:
+        - CreateNamespace=true
