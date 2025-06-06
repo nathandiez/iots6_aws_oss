@@ -1,0 +1,168 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: iot-service
+  namespace: ${NAMESPACE}
+  labels:
+    app: iot-service
+    component: data-processor
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: iot-service
+  template:
+    metadata:
+      labels:
+        app: iot-service
+        component: data-processor
+    spec:
+      containers:
+      - name: iot-service
+        image: python:3.9-slim
+        command: ["/bin/bash", "-c"]
+        args:
+          - |
+            pip install paho-mqtt==1.6.1 pytz==2023.3 psycopg2-binary==2.9.6
+            cat > /iot_service.py << 'EOF'
+            import paho.mqtt.client as mqtt
+            import time
+            import os
+            import logging
+            import pytz
+            import json
+            import psycopg2
+            from datetime import datetime
+            
+            logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+            logger = logging.getLogger(__name__)
+            
+            def get_db_connection():
+                while True:
+                    try:
+                        conn = psycopg2.connect(
+                            dbname=os.getenv("POSTGRES_DB"),
+                            user=os.getenv("POSTGRES_USER"),
+                            password=os.getenv("POSTGRES_PASSWORD"),
+                            host=os.getenv("POSTGRES_HOST", "timescaledb"),
+                            port=os.getenv("POSTGRES_PORT", "5432"),
+                        )
+                        logger.info("Successfully connected to database")
+                        return conn
+                    except psycopg2.OperationalError as e:
+                        logger.error(f"Could not connect to database: {e}")
+                        time.sleep(5)
+            
+            def store_sensor_data(data):
+                try:
+                    db_data = data.copy()
+                    db_data.setdefault("event_type", "unknown")
+                    
+                    for key in ("temperature", "humidity", "pressure", "wifi_rssi", "uptime_seconds", "fan_pwm", "fans_active_level"):
+                        if db_data.get(key) is not None:
+                            try:
+                                if key in ("uptime_seconds", "fan_pwm", "fans_active_level", "wifi_rssi"):
+                                    db_data[key] = int(db_data[key])
+                                else:
+                                    db_data[key] = float(db_data[key])
+                            except Exception:
+                                db_data[key] = None
+                    
+                    if "timestamp" in db_data:
+                        db_data["time"] = db_data.pop("timestamp")
+                    
+                    db_data.setdefault("temp_sensor_type", None)
+                    db_data.setdefault("sensor_type", None)
+                    
+                    with db_conn.cursor() as cur:
+                        cur.execute("""
+                            INSERT INTO sensor_data (
+                                time, device_id, event_type, temperature, humidity, 
+                                pressure, temp_sensor_type, motion, switch, version, uptime,
+                                wifi_rssi, uptime_seconds, fan_pwm, fans_active_level, sensor_type
+                            )
+                            VALUES (
+                                %(time)s, %(device_id)s, %(event_type)s, %(temperature)s, %(humidity)s,
+                                %(pressure)s, %(temp_sensor_type)s, %(motion)s, %(switch)s, %(version)s, %(uptime)s,
+                                %(wifi_rssi)s, %(uptime_seconds)s, %(fan_pwm)s, %(fans_active_level)s, %(sensor_type)s
+                            )
+                        """, db_data)
+                        db_conn.commit()
+                    logger.info(f"Stored {db_data['event_type']} data for device {db_data['device_id']}")
+                except Exception as e:
+                    logger.error(f"Error storing data: {e}")
+                    db_conn.rollback()
+            
+            def on_connect(client, userdata, flags, rc):
+                logger.info(f"Connected with result code {rc}")
+                client.subscribe("iots6/#")
+            
+            def on_message(client, userdata, msg):
+                try:
+                    message_text = msg.payload.decode()
+                    logger.info(f"Received message on {msg.topic}: {message_text}")
+                    
+                    if "MQTT event:" in message_text:
+                        json_start = message_text.find("{")
+                        if json_start != -1:
+                            json_text = message_text[json_start:]
+                            data = json.loads(json_text)
+                        else:
+                            raise ValueError("No JSON object found in message")
+                    else:
+                        data = json.loads(message_text)
+                    
+                    if "timestamp" in data and data["timestamp"]:
+                        if data["timestamp"].endswith("Z"):
+                            ts_str = data["timestamp"][:-1]
+                            dt = datetime.fromisoformat(ts_str)
+                            data["timestamp"] = dt.replace(tzinfo=pytz.UTC)
+                        else:
+                            dt = datetime.fromisoformat(data["timestamp"])
+                            if dt.tzinfo is None:
+                                data["timestamp"] = dt.replace(tzinfo=pytz.UTC)
+                            else:
+                                data["timestamp"] = dt
+                    
+                    store_sensor_data(data)
+                except Exception as e:
+                    logger.error(f"Error processing message: {e}")
+            
+            db_conn = get_db_connection()
+            client = mqtt.Client()
+            client.on_connect = on_connect
+            client.on_message = on_message
+            
+            broker_address = os.getenv("MQTT_BROKER", "mosquitto")
+            logger.info(f"Connecting to broker at {broker_address}")
+            client.connect(broker_address, 1883, 60)
+            client.loop_forever()
+            EOF
+            python /iot_service.py
+        env:
+        - name: POSTGRES_DB
+          valueFrom:
+            secretKeyRef:
+              name: iot-credentials
+              key: POSTGRES_DB
+        - name: POSTGRES_USER
+          valueFrom:
+            secretKeyRef:
+              name: iot-credentials
+              key: POSTGRES_USER
+        - name: POSTGRES_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: iot-credentials
+              key: POSTGRES_PASSWORD
+        - name: POSTGRES_HOST
+          value: "timescaledb"
+        - name: MQTT_BROKER
+          value: "mosquitto"
+        resources:
+          requests:
+            memory: "256Mi"
+            cpu: "100m"
+          limits:
+            memory: "512Mi"
+            cpu: "200m"

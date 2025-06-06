@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# taillogs.sh - Tail Docker container logs from Azure IoTS6 deployment
+# taillogs.sh - Tail Docker container logs from AWS IoTS6 deployment
 set -e
 
-echo "Connecting to Azure VM for log monitoring..."
+echo "Connecting to AWS VM for log monitoring..."
 
 # Get IP from terraform
 cd terraform
@@ -14,7 +14,7 @@ if [ -z "$VM_IP" ] || [ "$VM_IP" = "null" ]; then
   exit 1
 fi
 
-echo "Connecting to Azure VM at $VM_IP..."
+echo "Connecting to AWS VM at $VM_IP..."
 
 # Clean up old SSH keys to avoid conflicts
 ssh-keygen -R $VM_IP 2>/dev/null || true

@@ -1,0 +1,37 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: timescaledb-init
+  namespace: ${NAMESPACE}
+data:
+  init-db.sql: |
+    CREATE EXTENSION IF NOT EXISTS timescaledb CASCADE;
+    
+    CREATE TABLE IF NOT EXISTS sensor_data (
+        time TIMESTAMPTZ NOT NULL,
+        device_id TEXT NOT NULL,
+        event_type TEXT NOT NULL,
+        temperature FLOAT,
+        humidity FLOAT,
+        pressure FLOAT,
+        temp_sensor_type TEXT,
+        motion TEXT,
+        switch TEXT,
+        version TEXT,
+        uptime TEXT,
+        wifi_rssi INTEGER,
+        uptime_seconds INTEGER,
+        fan_pwm INTEGER,
+        fans_active_level INTEGER,
+        sensor_type TEXT
+    );
+    
+    SELECT create_hypertable('sensor_data', 'time', if_not_exists => TRUE);
+    
+    CREATE INDEX IF NOT EXISTS idx_sensor_data_device_id ON sensor_data(device_id);
+    CREATE INDEX IF NOT EXISTS idx_sensor_data_event_type ON sensor_data(event_type);
+    CREATE INDEX IF NOT EXISTS idx_sensor_data_sensor_type ON sensor_data(sensor_type);
+    
+    GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA public TO ${POSTGRES_USER};
+    GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public TO ${POSTGRES_USER};
+    GRANT ALL PRIVILEGES ON SCHEMA public TO ${POSTGRES_USER};

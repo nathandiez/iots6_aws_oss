@@ -1,0 +1,41 @@
+# System Requirements for IoTS6 AWS Open Source Stack
+
+# Core Tools
+aws-cli>=2.0.0
+terraform>=1.0.0
+kubectl>=1.28.0
+
+# VM Deployment (Optional)
+ansible>=7.0.0
+
+# macOS Users
+gettext  # Provides envsubst command
+
+# Installation Commands:
+# 
+# macOS (Homebrew):
+# brew install awscli terraform kubectl ansible gettext
+#
+# Ubuntu/Debian:
+# curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
+# unzip awscliv2.zip && sudo ./aws/install
+# wget -O- https://apt.releases.hashicorp.com/gpg | sudo gpg --dearmor -o /usr/share/keyrings/hashicorp-archive-keyring.gpg
+# echo "deb [signed-by=/usr/share/keyrings/hashicorp-archive-keyring.gpg] https://apt.releases.hashicorp.com $(lsb_release -cs) main" | sudo tee /etc/apt/sources.list.d/hashicorp.list
+# sudo apt update && sudo apt install terraform
+# sudo apt install kubectl ansible gettext-base
+#
+# Windows (Chocolatey):
+# choco install awscli terraform kubernetes-cli ansible
+#
+# AWS Configuration:
+# aws configure  # Set up AWS credentials and region
+#
+# EKS Requirements:
+# aws eks create-addon --cluster-name CLUSTER_NAME --addon-name aws-ebs-csi-driver
+# 
+# Verify Installation:
+# aws --version
+# terraform --version  
+# kubectl version --client
+# ansible --version
+# envsubst --help

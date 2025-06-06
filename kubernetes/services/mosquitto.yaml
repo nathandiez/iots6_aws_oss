@@ -1,0 +1,21 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: mosquitto
+  namespace: ${NAMESPACE}
+  labels:
+    app: mosquitto
+    component: mqtt-broker
+spec:
+  type: LoadBalancer
+  ports:
+  - port: 1883
+    targetPort: 1883
+    protocol: TCP
+    name: mqtt
+  - port: 9001
+    targetPort: 9001
+    protocol: TCP
+    name: websockets
+  selector:
+    app: mosquitto
