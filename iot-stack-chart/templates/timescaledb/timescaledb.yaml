@@ -47,6 +47,23 @@ spec:
         app: timescaledb
         release: {{ .Release.Name }}
     spec:
+      securityContext:
+        fsGroup: 999  # Postgres user group
+        runAsUser: 999  # Postgres user ID
+      initContainers:
+      - name: postgres-permissions
+        image: busybox:1.35
+        command: ['sh', '-c']
+        args:
+          - |
+            rm -rf /var/lib/postgresql/data/lost+found
+            chown -R 999:999 /var/lib/postgresql/data
+            chmod -R 700 /var/lib/postgresql/data
+        volumeMounts:
+        - name: timescaledb-storage
+          mountPath: /var/lib/postgresql/data
+        securityContext:
+          runAsUser: 0  # Run as root to fix permissions
       containers:
       - name: timescaledb
         image: "{{ .Values.timescaledb.image.repository }}:{{ .Values.timescaledb.image.tag }}"
@@ -56,6 +73,9 @@ spec:
         envFrom:
         - secretRef:
             name: timescaledb-secret
+        env:
+        - name: PGDATA
+          value: /var/lib/postgresql/data/pgdata
         volumeMounts:
         - name: timescaledb-storage
           mountPath: /var/lib/postgresql/data
