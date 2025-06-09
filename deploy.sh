@@ -2,8 +2,24 @@
 # deploy.sh - AWS deployment script for awiots6
 set -e
 
-# Configuration
-TARGET_HOSTNAME="awiots6"
+# Load environment variables from .env
+if [[ ! -f ".env" ]]; then
+    echo "❌ .env file not found. Please create it with required variables"
+    exit 1
+fi
+
+echo "Loading environment variables..."
+set -a
+source .env
+set +a
+
+# Export Terraform variables from .env
+export TF_VAR_aws_region="$AWS_REGION"
+export TF_VAR_project_name="$PROJECT_NAME"
+export TF_VAR_vm_name="$TARGET_HOSTNAME"
+export TF_VAR_admin_username="$ANSIBLE_USER"
+export TF_VAR_ssh_public_key_path="${SSH_KEY_PATH}.pub"
+export TF_VAR_key_pair_name="$SSH_KEY_NAME"
 
 # Check for --local-exec flag
 USE_LOCAL_EXEC=false
@@ -82,8 +98,8 @@ $TARGET_HOSTNAME ansible_host=$IP
 
 [all:vars]
 ansible_python_interpreter=/usr/bin/python3
-ansible_user=ubuntu
-ansible_ssh_private_key_file=~/.ssh/id_rsa_aws
+ansible_user=${ANSIBLE_USER}
+ansible_ssh_private_key_file=${SSH_KEY_PATH}
 EOF
 
     # Wait for SSH to become available
@@ -92,7 +108,7 @@ EOF
     START_TIME=$(date +%s)
 
     while true; do
-      if ssh -i ~/.ssh/id_rsa_aws -o StrictHostKeyChecking=no -o BatchMode=yes -o ConnectTimeout=5 ubuntu@"$IP" echo ready 2>/dev/null; then
+      if ssh -i ${SSH_KEY_PATH} -o StrictHostKeyChecking=no -o BatchMode=yes -o ConnectTimeout=5 ${ANSIBLE_USER}@"$IP" echo ready 2>/dev/null; then
         echo "SSH is available!"
         break
       fi
@@ -120,7 +136,7 @@ EOF
     
     # Test TimescaleDB connectivity
     echo "Testing TimescaleDB connection..."
-    if ssh -i ~/.ssh/id_rsa_aws -o StrictHostKeyChecking=no ubuntu@"$IP" "PGPASSWORD=iotpass psql -h localhost -U iotuser -d iotdb -c 'SELECT 1;'" 2>/dev/null; then
+    if ssh -i ${SSH_KEY_PATH} -o StrictHostKeyChecking=no ${ANSIBLE_USER}@"$IP" "PGPASSWORD=${POSTGRES_PASSWORD} psql -h localhost -U ${POSTGRES_USER} -d ${POSTGRES_DB} -t -c 'SELECT 1;'" 2>/dev/null | grep -q "1"; then
         echo "✅ TimescaleDB is responding"
     else
         echo "⚠️  TimescaleDB may still be starting up"
@@ -151,7 +167,7 @@ EOF
 
     # Check Docker containers
     echo "Checking IoT service status..."
-    ssh -i ~/.ssh/id_rsa_aws -o StrictHostKeyChecking=no ubuntu@"$IP" "docker ps --format 'table {{.Names}}\t{{.Status}}'" || echo "Could not check container status"
+    ssh -i ${SSH_KEY_PATH} -o StrictHostKeyChecking=no ${ANSIBLE_USER}@"$IP" "docker ps --format 'table {{.Names}}\t{{.Status}}'" || echo "Could not check container status"
     
     # Set variables for final summary
     SERVICE_IP="$IP"
@@ -162,10 +178,10 @@ EOF
     echo "✅ AWS EC2 instance created/configured with $DEPLOYMENT_METHOD"
     if [ "$USE_LOCAL_EXEC" = false ]; then
         echo "✅ IoT Infrastructure Services:"
-        echo "   • TimescaleDB: postgresql://iotuser:iotpass@$SERVICE_IP:5432/iotdb"
+        echo "   • TimescaleDB: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@$SERVICE_IP:5432/${POSTGRES_DB}"
         echo "   • MQTT Broker: mqtt://$SERVICE_IP:1883"
-        echo "   • Grafana Dashboard: http://$SERVICE_IP:3000 (admin/admin)"
-        echo "   • SSH Access: ubuntu@$SERVICE_IP"
+        echo "   • Grafana Dashboard: http://$SERVICE_IP:3000 (${GRAFANA_ADMIN_USER}/${GRAFANA_ADMIN_PASSWORD})"
+        echo "   • SSH Access: ${ANSIBLE_USER}@$SERVICE_IP"
         echo "✅ Server IP: $SERVICE_IP"
         echo ""
         echo "💡 Update your IoT devices to use: $SERVICE_IP"

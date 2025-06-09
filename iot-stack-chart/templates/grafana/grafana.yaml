@@ -1,17 +1,6 @@
 {{- if .Values.grafana.enabled }}
 ---
 apiVersion: v1
-kind: Secret
-metadata:
-  name: grafana-secret
-  namespace: {{ .Values.global.namespace }}
-type: Opaque
-data:
-  GF_SECURITY_ADMIN_USER: {{ .Values.grafana.admin.user | b64enc }}
-  GF_SECURITY_ADMIN_PASSWORD: {{ randAlphaNum 16 | b64enc }}
-
----
-apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
   name: grafana-pvc
@@ -70,7 +59,7 @@ spec:
         - containerPort: {{ .Values.grafana.service.port }}
         envFrom:
         - secretRef:
-            name: grafana-secret
+            name: iot-secrets
         volumeMounts:
         - name: grafana-storage
           mountPath: /var/lib/grafana
@@ -86,25 +75,3 @@ spec:
       - name: grafana-storage
         persistentVolumeClaim:
           claimName: grafana-pvc
-
----
-apiVersion: v1
-kind: Service
-metadata:
-  name: grafana
-  namespace: {{ .Values.global.namespace }}
-  labels:
-    app: grafana
-    chart: {{ include "iot-stack-chart.chart" . }}
-    release: {{ .Release.Name }}
-spec:
-  type: {{ .Values.grafana.service.type }}
-  ports:
-  - port: {{ .Values.grafana.service.port }}
-    targetPort: {{ .Values.grafana.service.port }}
-    protocol: TCP
-    name: http
-  selector:
-    app: grafana
-    release: {{ .Release.Name }}
-{{- end }}

@@ -111,7 +111,7 @@
 
     - name: Add deployment user to docker group for non-sudo docker commands
       ansible.builtin.user:
-        name: "{{ ansible_user | default('ubuntu') }}" # Use ansible_user which is 'ubuntu' 
+        name: "{{ ansible_user | default(lookup('env', 'ANSIBLE_USER') | default('ubuntu')) }}"
         groups: docker
         append: yes
       become: yes

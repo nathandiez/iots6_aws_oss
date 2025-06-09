@@ -3,15 +3,17 @@
 - name: Deploy and configure IoT Service
   hosts: iot_servers
   vars:
-    iot_service_dir: /home/{{ ansible_user | default('nathan') }}/iot_service
-    iot_service_container_name: iot_service
-    # Database connection details
-    postgres_db: iotdb
-    postgres_user: iotuser
-    postgres_password: iotpass  # Consider using Ansible Vault for sensitive data
-    # MQTT connection details (using container name instead of localhost)
-    mqtt_broker: mosquitto
+    iot_service_dir: /home/{{ ansible_user | default(lookup('env', 'ANSIBLE_USER') | default('ubuntu')) }}/iot_service
+    iot_service_container_name: "{{ lookup('env', 'IOT_SERVICE_CONTAINER_NAME') | default('iot_service') }}"
+    # Database connection details from .env
+    postgres_db: "{{ lookup('env', 'POSTGRES_DB') }}"
+    postgres_user: "{{ lookup('env', 'POSTGRES_USER') }}"
+    postgres_password: "{{ lookup('env', 'POSTGRES_PASSWORD') }}"
+    # MQTT connection details from .env
+    mqtt_broker: "{{ lookup('env', 'MQTT_CONTAINER_NAME') | default('mosquitto') }}"
     mqtt_port: "1883"  # Note: String with quotes
+    # TimescaleDB container name from .env
+    timescale_container: "{{ lookup('env', 'TIMESCALE_CONTAINER_NAME') | default('timescaledb') }}"
 
   tasks:
     # --------------------------------------------------------------------------
@@ -22,32 +24,32 @@
         path: "{{ iot_service_dir }}"
         state: directory
         mode: '0755'
-        owner: "{{ ansible_user | default('nathan') }}"
-        group: "{{ ansible_user | default('nathan') }}"
+        owner: "{{ ansible_user | default(lookup('env', 'ANSIBLE_USER') | default('ubuntu')) }}"
+        group: "{{ ansible_user | default(lookup('env', 'ANSIBLE_USER') | default('ubuntu')) }}"
 
     - name: Copy IoT service Python script
       ansible.builtin.copy:
         src: ../../services/iot_service/iot_service.py
         dest: "{{ iot_service_dir }}/iot_service.py"
         mode: '0755'
-        owner: "{{ ansible_user | default('nathan') }}"
-        group: "{{ ansible_user | default('nathan') }}"
+        owner: "{{ ansible_user | default(lookup('env', 'ANSIBLE_USER') | default('ubuntu')) }}"
+        group: "{{ ansible_user | default(lookup('env', 'ANSIBLE_USER') | default('ubuntu')) }}"
 
     - name: Copy Dockerfile
       ansible.builtin.copy:
         src: ../../services/iot_service/Dockerfile
         dest: "{{ iot_service_dir }}/Dockerfile"
         mode: '0644'
-        owner: "{{ ansible_user | default('nathan') }}"
-        group: "{{ ansible_user | default('nathan') }}"
+        owner: "{{ ansible_user | default(lookup('env', 'ANSIBLE_USER') | default('ubuntu')) }}"
+        group: "{{ ansible_user | default(lookup('env', 'ANSIBLE_USER') | default('ubuntu')) }}"
 
     - name: Copy requirements.txt
       ansible.builtin.copy:
         src: ../../services/iot_service/requirements.txt
         dest: "{{ iot_service_dir }}/requirements.txt"
         mode: '0644'
-        owner: "{{ ansible_user | default('nathan') }}"
-        group: "{{ ansible_user | default('nathan') }}"
+        owner: "{{ ansible_user | default(lookup('env', 'ANSIBLE_USER') | default('ubuntu')) }}"
+        group: "{{ ansible_user | default(lookup('env', 'ANSIBLE_USER') | default('ubuntu')) }}"
 
     # --------------------------------------------------------------------------
     # Build and Deploy Docker Container
@@ -71,8 +73,8 @@
       become: yes
 
     - name: Add Mosquitto container to iot_network if needed
-      ansible.builtin.command: docker network connect iot_network mosquitto
-      when: "'mosquitto' not in network_inspect.stdout"
+      ansible.builtin.command: docker network connect iot_network {{ mqtt_broker }}
+      when: mqtt_broker not in network_inspect.stdout
       ignore_errors: yes  # In case container doesn't exist yet
       become: yes
 
@@ -88,7 +90,7 @@
           POSTGRES_DB: "{{ postgres_db }}"
           POSTGRES_USER: "{{ postgres_user }}"
           POSTGRES_PASSWORD: "{{ postgres_password }}"
-          POSTGRES_HOST: "timescaledb"
+          POSTGRES_HOST: "{{ timescale_container }}"
           POSTGRES_PORT: "5432"
           MQTT_BROKER: "{{ mqtt_broker }}"
           MQTT_PORT: "{{ mqtt_port }}"

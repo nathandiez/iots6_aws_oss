@@ -4,5 +4,5 @@ metadata:
   name: {{ .Values.global.namespace }}
   labels:
     name: {{ .Values.global.namespace }}
-    project: iots6
+    project: {{ .Values.global.project }}
     managed-by: helm

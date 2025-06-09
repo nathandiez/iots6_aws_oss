@@ -34,6 +34,9 @@ spec:
           value: {{ .Values.iotService.env.MQTT_BROKER }}
         - name: DB_HOST
           value: {{ .Values.iotService.env.DB_HOST }}
+        envFrom:
+        - secretRef:
+            name: iot-secrets
         resources:
           {{- toYaml .Values.iotService.resources | nindent 10 }}
 

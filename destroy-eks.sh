@@ -2,6 +2,22 @@
 # destroy-eks.sh - Complete EKS teardown script
 set -e
 
+# Load environment variables from .env
+if [[ ! -f ".env" ]]; then
+    echo "❌ .env file not found. Please create it with required variables"
+    exit 1
+fi
+
+echo "Loading environment variables..."
+set -a
+source .env
+set +a
+
+# Export Terraform variables from .env
+echo "Setting Terraform variables..."
+export TF_VAR_aws_region="$AWS_REGION"
+export TF_VAR_cluster_name="$CLUSTER_NAME"
+
 echo "=========================================="
 echo "WARNING: DESTRUCTIVE OPERATION"
 echo "=========================================="
@@ -10,10 +26,13 @@ echo "  - Destroy the AWS EKS cluster"
 echo "  - Delete all Kubernetes workloads"
 echo "  - Remove all persistent volumes and data"
 echo "  - Delete all EKS addons (EBS CSI driver)"
+echo "  - Delete External Secrets Operator and resources"
+echo "  - Delete AWS Parameter Store parameters"
 echo "  - Delete all Terraform state files"
 echo "  - Clean up kubectl context"
 echo ""
-echo "Target cluster: iots6-eks"
+echo "Target cluster: ${CLUSTER_NAME}"
+echo "Project name: ${PROJECT_NAME}"
 echo "AWS Resources to be destroyed:"
 echo "  • EKS cluster (3 nodes)"
 echo "  • All worker VMs"
@@ -21,30 +40,27 @@ echo "  • Load balancers and public IPs"
 echo "  • Persistent volumes and disks"
 echo "  • VPC and networking components"
 echo "  • EKS addons (EBS CSI driver)"
+echo "  • External Secrets IAM roles and policies"
+echo "  • AWS Parameter Store configuration"
 echo ""
 echo "Services to be destroyed:"
 echo "  • TimescaleDB and ALL data"
 echo "  • Mosquitto MQTT broker"
 echo "  • IoT data processing services"
 echo "  • Grafana dashboards and config"
+echo "  • External Secrets Operator"
 echo ""
 echo "This action is IRREVERSIBLE!"
 echo "=========================================="
-
-# Prompt for confirmation
-read -p "Are you sure you want to proceed? (type 'yes' to continue): " confirmation
-
-if [[ "$confirmation" != "yes" ]]; then
- echo "Operation cancelled."
- exit 0
-fi
 
 echo ""
 echo "Starting EKS destruction process..."
 
 # Source AWS environment variables
 echo "Loading AWS environment..."
-source ./set-aws-env.sh
+if [[ -f "./set-aws-env.sh" ]]; then
+    source ./set-aws-env.sh
+fi
 
 echo ""
 echo "🧹 Cleaning up leftover AWS resources that could block deletion..."
@@ -65,7 +81,7 @@ fi
 # Method 2: If terraform output failed, try to find VPC by tags
 if [[ -z "$VPC_ID" ]]; then
    echo "Terraform output failed, searching for VPC by tags..."
-   VPC_ID=$(aws ec2 describe-vpcs --filters "Name=tag:Name,Values=iots6-eks-vpc" --query 'Vpcs[0].VpcId' --output text 2>/dev/null || echo "")
+   VPC_ID=$(aws ec2 describe-vpcs --filters "Name=tag:Name,Values=${CLUSTER_NAME}-vpc" --query 'Vpcs[0].VpcId' --output text 2>/dev/null || echo "")
    if [[ "$VPC_ID" == "None" ]]; then
        VPC_ID=""
    fi
@@ -217,12 +233,12 @@ cd "$EKS_DIR"
 # Get cluster info for cleanup (before destroying)
 echo ""
 echo "Getting cluster information for cleanup..."
-CLUSTER_NAME=""
+TERRAFORM_CLUSTER_NAME=""
 
 if [[ -f "terraform.tfstate" ]]; then
  # Try to get cluster name, filtering out warnings
  CLUSTER_OUTPUT=$(terraform output -raw cluster_name 2>&1 || echo "")
- CLUSTER_NAME=$(echo "$CLUSTER_OUTPUT" | grep -v "Warning" | grep -v "╷" | grep -v "│" | head -1 || echo "")
+ TERRAFORM_CLUSTER_NAME=$(echo "$CLUSTER_OUTPUT" | grep -v "Warning" | grep -v "╷" | grep -v "│" | head -1 || echo "")
 fi
 
 # Check if state file has actual resources
@@ -258,26 +274,56 @@ if [[ -f "terraform.tfstate" ]]; then
  echo "Planning destruction..."
  terraform plan -destroy
  
- echo ""
- read -p "Proceed with destroying these AWS resources? (type 'yes'): " final_confirm
- 
- if [[ "$final_confirm" != "yes" ]]; then
-   echo "Destruction cancelled."
-   exit 0
- fi
- 
  # First, try to delete Kubernetes resources to clean up properly
- if [[ -n "$CLUSTER_NAME" ]]; then
+ if [[ -n "$TERRAFORM_CLUSTER_NAME" ]]; then
    echo ""
    echo "Attempting to clean up Kubernetes resources first..."
    
    # Try to get cluster credentials
-   if aws eks update-kubeconfig --region $(aws configure get region) --name "$CLUSTER_NAME" 2>/dev/null; then
+   if aws eks update-kubeconfig --region ${AWS_REGION} --name "$TERRAFORM_CLUSTER_NAME" 2>/dev/null; then
+     echo "Cleaning up External Secrets resources..."
+     kubectl delete externalsecrets --all --all-namespaces --timeout=30s 2>/dev/null || true
+     kubectl delete clustersecretstore aws-parameter-store --timeout=30s 2>/dev/null || true
+     
+     # Uninstall External Secrets Helm releases
+     echo "Uninstalling External Secrets Helm releases..."
+     helm uninstall external-secrets-config -n default 2>/dev/null || true
+     helm uninstall external-secrets -n external-secrets-system 2>/dev/null || true
+     kubectl delete namespace external-secrets-system --timeout=60s 2>/dev/null || true
+     
+     # Uninstall ArgoCD
+     echo "Uninstalling ArgoCD..."
+     kubectl delete -n ${ARGOCD_NAMESPACE} -f "https://raw.githubusercontent.com/argoproj/argo-cd/${ARGOCD_VERSION}/manifests/install.yaml" 2>/dev/null || true
+     kubectl delete namespace ${ARGOCD_NAMESPACE} --timeout=60s 2>/dev/null || true
+     
      echo "Deleting all namespaced resources..."
      kubectl delete all --all --all-namespaces --timeout=60s 2>/dev/null || true
      
+     # CRITICAL: Delete PVCs to ensure EBS volumes are cleaned up
+     echo "🗑️  Deleting PersistentVolumeClaims to clean up EBS volumes..."
+     for ns in ${PROJECT_NAME}-dev ${PROJECT_NAME}-staging ${PROJECT_NAME}-prod; do
+         echo "  Deleting PVCs in namespace: $ns"
+         kubectl delete pvc --all -n $ns --wait=true --timeout=60s 2>/dev/null || true
+     done
+     
+     # Also delete PVCs in any other namespaces that might exist
+     echo "  Checking for PVCs in all namespaces..."
+     kubectl get pvc --all-namespaces --no-headers 2>/dev/null | while read ns name rest; do
+         echo "  🗑️  Deleting PVC $name in namespace $ns"
+         kubectl delete pvc $name -n $ns --wait=true --timeout=30s 2>/dev/null || true
+     done
+     
      echo "Deleting persistent volumes..."
      kubectl delete pv --all --timeout=60s 2>/dev/null || true
+     
+     # Delete project namespaces
+     echo "Deleting project namespaces..."
+     for ns in ${PROJECT_NAME}-dev ${PROJECT_NAME}-staging ${PROJECT_NAME}-prod; do
+         kubectl delete namespace $ns --timeout=60s 2>/dev/null || true
+     done
+     
+     echo "⏳ Waiting 30 seconds for volumes to be released..."
+     sleep 30
      
      echo "Kubernetes cleanup completed (or timed out safely)"
    else
@@ -286,7 +332,38 @@ if [[ -f "terraform.tfstate" ]]; then
    
    # Clean up EKS addons before destroying cluster
    echo "Cleaning up EKS addons..."
-   aws eks delete-addon --cluster-name "$CLUSTER_NAME" --addon-name aws-ebs-csi-driver 2>/dev/null || true
+   aws eks delete-addon --cluster-name "$TERRAFORM_CLUSTER_NAME" --addon-name aws-ebs-csi-driver 2>/dev/null || true
+   
+   # Clean up External Secrets IAM resources
+   echo "Cleaning up External Secrets IAM resources..."
+   AWS_ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+   aws iam detach-role-policy \
+     --role-name ExternalSecretsRole \
+     --policy-arn "arn:aws:iam::${AWS_ACCOUNT_ID}:policy/ExternalSecretsParameterStorePolicy" 2>/dev/null || true
+   
+   aws iam delete-role --role-name ExternalSecretsRole 2>/dev/null || true
+   aws iam delete-policy --policy-arn "arn:aws:iam::${AWS_ACCOUNT_ID}:policy/ExternalSecretsParameterStorePolicy" 2>/dev/null || true
+   
+   # Clean up EBS CSI Driver IAM resources
+   echo "Cleaning up EBS CSI Driver IAM resources..."
+   aws iam detach-role-policy \
+     --role-name AmazonEKS_EBS_CSI_DriverRole \
+     --policy-arn arn:aws:iam::aws:policy/service-role/AmazonEBSCSIDriverPolicy 2>/dev/null || true
+   
+   aws iam delete-role --role-name AmazonEKS_EBS_CSI_DriverRole 2>/dev/null || true
+   
+   echo "Cleaning up AWS Parameter Store parameters..."
+   aws ssm delete-parameters --names \
+     "/${PROJECT_NAME}/postgres/db" \
+     "/${PROJECT_NAME}/postgres/user" \
+     "/${PROJECT_NAME}/postgres/password" \
+     "/${PROJECT_NAME}/grafana/admin-user" \
+     "/${PROJECT_NAME}/grafana/admin-password" \
+     "/${PROJECT_NAME}/kubernetes/namespace" \
+     "/${PROJECT_NAME}/project/name" \
+     "/${PROJECT_NAME}/datadog/api-key" \
+     "/${PROJECT_NAME}/project/name" 2>/dev/null || true
+   
    echo "Waiting for addon deletion..."
    sleep 10
  fi
@@ -328,13 +405,33 @@ if [[ -n "$VPC_ID" ]]; then
     fi
 fi
 
+# Clean up any orphaned EBS volumes with project tags
+echo ""
+echo "🔍 Checking for orphaned EBS volumes..."
+ORPHANED_VOLUMES=$(aws ec2 describe-volumes \
+    --filters "Name=tag:Name,Values=${PROJECT_NAME}-eks-dynamic-pvc-*" "Name=status,Values=available" \
+    --query "Volumes[*].VolumeId" --output text 2>/dev/null || echo "")
+
+if [[ -n "$ORPHANED_VOLUMES" && "$ORPHANED_VOLUMES" != "None" ]]; then
+    echo "⚠️  Found orphaned EBS volumes from previous runs:"
+    echo "$ORPHANED_VOLUMES" | tr '\t' '\n' | while read vol; do
+        if [[ -n "$vol" && "$vol" != "None" ]]; then
+            echo "  🗑️  Deleting orphaned volume: $vol"
+            aws ec2 delete-volume --volume-id "$vol" 2>/dev/null || true
+        fi
+    done
+    echo "✅ Orphaned volumes cleaned up"
+else
+    echo "✅ No orphaned volumes found"
+fi
+
 # Clean up kubectl contexts
 echo ""
 echo "Cleaning up kubectl contexts..."
-if [[ -n "$CLUSTER_NAME" ]]; then
- kubectl config delete-context "arn:aws:eks:$(aws configure get region):$(aws sts get-caller-identity --query Account --output text):cluster/$CLUSTER_NAME" 2>/dev/null || true
- kubectl config unset "users.arn:aws:eks:$(aws configure get region):$(aws sts get-caller-identity --query Account --output text):cluster/$CLUSTER_NAME" 2>/dev/null || true
- echo "✅ Cleaned up kubectl context for $CLUSTER_NAME"
+if [[ -n "$TERRAFORM_CLUSTER_NAME" ]]; then
+ kubectl config delete-context "arn:aws:eks:${AWS_REGION}:$(aws sts get-caller-identity --query Account --output text):cluster/$TERRAFORM_CLUSTER_NAME" 2>/dev/null || true
+ kubectl config unset "users.arn:aws:eks:${AWS_REGION}:$(aws sts get-caller-identity --query Account --output text):cluster/$TERRAFORM_CLUSTER_NAME" 2>/dev/null || true
+ echo "✅ Cleaned up kubectl context for $TERRAFORM_CLUSTER_NAME"
 fi
 
 # Clean up all Terraform files
@@ -357,15 +454,22 @@ echo ""
 echo "=========================================="
 echo "EKS DESTRUCTION COMPLETE"
 echo "=========================================="
-echo "✅ EKS cluster destroyed (iots6-eks)"
+echo "✅ EKS cluster destroyed (${CLUSTER_NAME})"
+echo "✅ Project cleaned up (${PROJECT_NAME})"
 echo "✅ All 3 worker nodes terminated"
 echo "✅ TimescaleDB and all sensor data deleted"
 echo "✅ MQTT broker and message history removed"
 echo "✅ All Kubernetes deployments destroyed"
 echo "✅ Persistent volumes and disks deleted"
+echo "✅ PersistentVolumeClaims cleaned up"
+echo "✅ Orphaned EBS volumes removed"
 echo "✅ Load balancers and public IPs released"
 echo "✅ VPC and networking components deleted"
 echo "✅ EKS addons (EBS CSI driver) deleted"
+echo "✅ External Secrets Operator uninstalled"
+echo "✅ External Secrets IAM resources deleted"
+echo "✅ AWS Parameter Store parameters deleted"
+echo "✅ ArgoCD uninstalled"
 echo "✅ AWS billing stopped for these resources"
 echo "✅ Terraform state files deleted"
 echo "✅ kubectl contexts cleaned up"

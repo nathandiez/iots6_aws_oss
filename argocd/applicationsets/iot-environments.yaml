@@ -19,6 +19,10 @@ spec:
         namespace: iots6-prod
         cluster: https://kubernetes.default.svc
         valuesFile: values-prod.yaml
+      - name: datadog
+        namespace: datadog
+        cluster: https://kubernetes.default.svc
+        valuesFile: values.yaml
   template:
     metadata:
       name: 'iot-stack-{{name}}'

@@ -1,24 +1,43 @@
 #!/usr/bin/env bash
-# destroy.sh - Complete Azure teardown script
+# destroy.sh - Complete AWS teardown script
 # WARNING: This will completely destroy the VM and all Terraform state!
 set -e
+
+# Load environment variables from .env
+if [[ ! -f ".env" ]]; then
+    echo "❌ .env file not found. Please create it with required variables"
+    exit 1
+fi
+
+echo "Loading environment variables..."
+set -a
+source .env
+set +a
+
+# Export Terraform variables from .env
+echo "Setting Terraform variables..."
+export TF_VAR_aws_region="$AWS_REGION"
+export TF_VAR_project_name="$PROJECT_NAME"
+export TF_VAR_vm_name="$TARGET_HOSTNAME"
+export TF_VAR_admin_username="$ANSIBLE_USER"
+export TF_VAR_ssh_public_key_path="${SSH_KEY_PATH}.pub"
+export TF_VAR_key_pair_name="$SSH_KEY_NAME"
 
 echo "=========================================="
 echo "WARNING: DESTRUCTIVE OPERATION"
 echo "=========================================="
 echo "This will:"
-echo "  - Destroy the Azure IoT infrastructure VM"
+echo "  - Destroy the AWS IoT infrastructure VM"
 echo "  - Delete all Terraform state files"
 echo "  - Clean up lock files"
 echo "  - Reset everything to a clean slate"
 echo ""
-echo "Target VM: awiots6"
-echo "Azure Resources to be destroyed:"
+echo "Target VM: ${TARGET_HOSTNAME}"
+echo "AWS Resources to be destroyed:"
 echo "  • EC2 Instance (t3.small)"
 echo "  • Elastic IP address"
 echo "  • Security groups and VPC networking"
 echo "  • VPC, subnets, and internet gateway"
-echo "  • Resource group: rg-awiots6"
 echo ""
 echo "Services to be destroyed:"
 echo "  • TimescaleDB database and all data"
@@ -30,19 +49,11 @@ echo "This action is IRREVERSIBLE!"
 echo "Billing will stop after resource deletion."
 echo "=========================================="
 
-# Prompt for confirmation
-read -p "Are you sure you want to proceed? (type 'yes' to continue): " confirmation
-
-if [[ "$confirmation" != "yes" ]]; then
-  echo "Operation cancelled."
-  exit 0
-fi
-
 echo ""
 echo "Starting destruction process..."
 
-# Source Azure environment variables
-echo "Loading Azure environment..."
+# Source AWS environment variables
+echo "Loading AWS environment..."
 source ./set-aws-env.sh
 
 # Change to terraform directory
@@ -64,14 +75,6 @@ if [[ -f "terraform.tfstate" ]]; then
   # Show what will be destroyed
   echo "Planning destruction..."
   terraform plan -destroy
-  
-  echo ""
-  read -p "Proceed with destroying these AWS resources? (type 'yes'): " final_confirm
-  
-  if [[ "$final_confirm" != "yes" ]]; then
-    echo "Destruction cancelled."
-    exit 0
-  fi
   
   # Destroy the infrastructure
   echo "Running terraform destroy..."
@@ -115,12 +118,12 @@ cd ../ansible
 if [[ -f "inventory/hosts" ]]; then
   cat > inventory/hosts << EOF
 [iot_servers]
-awiots6 ansible_host=PLACEHOLDER
+${TARGET_HOSTNAME} ansible_host=PLACEHOLDER
 
 [all:vars]
 ansible_python_interpreter=/usr/bin/python3
-ansible_user=nathan
-ansible_ssh_private_key_file=~/.ssh/id_rsa_aws
+ansible_user=${ANSIBLE_USER}
+ansible_ssh_private_key_file=${SSH_KEY_PATH}
 EOF
   echo "Ansible inventory reset to placeholder state."
 fi
@@ -129,14 +132,13 @@ echo ""
 echo "=========================================="
 echo "DESTRUCTION COMPLETE"
 echo "=========================================="
-echo "✅ AWS EC2 instance destroyed (awiots6)"
+echo "✅ AWS EC2 instance destroyed (${TARGET_HOSTNAME})"
 echo "✅ TimescaleDB and all sensor data deleted"
 echo "✅ MQTT broker and message history removed"
 echo "✅ All Docker containers and networks destroyed"
 echo "✅ Public IP address released"
 echo "✅ Network security groups deleted"
 echo "✅ VPC, subnets, and internet gateway removed"
-echo "✅ Resource group (rg-awiots6) deleted"
 echo "✅ AWS billing stopped for these resources"
 echo "✅ Terraform state files deleted"
 echo "✅ Terraform lock files removed"
@@ -144,6 +146,6 @@ echo "✅ Provider cache cleared"
 echo "✅ SSH known_hosts cleaned up"
 echo "✅ Ansible inventory reset"
 echo ""
-echo "💰 All Azure costs for this deployment have stopped"
+echo "💰 All AWS costs for this deployment have stopped"
 echo "🚀 You can now run ./deploy.sh to start fresh!"
 echo "=========================================="

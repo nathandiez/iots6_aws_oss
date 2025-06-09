@@ -2,6 +2,21 @@
 # wait-for-ssh.sh - Wait for AWS EC2 to be accessible via SSH and update Ansible inventory
 set -e
 
+# Load environment variables from .env if available
+if [[ -f "../../.env" ]]; then
+    set -a
+    source ../../.env
+    set +a
+elif [[ -f "../.env" ]]; then
+    set -a
+    source ../.env
+    set +a
+elif [[ -f ".env" ]]; then
+    set -a
+    source .env
+    set +a
+fi
+
 echo "Waiting for SSH to become available..."
 max_attempts=30
 attempt=0
@@ -60,7 +75,7 @@ echo "Using IP: $IP"
 # Wait for SSH to actually be available
 echo "Testing SSH connectivity..."
 while [ $attempt -lt $max_attempts ]; do
-  if ssh -i ~/.ssh/id_rsa_aws -o StrictHostKeyChecking=no -o BatchMode=yes -o ConnectTimeout=10 ubuntu@"$IP" echo "SSH Ready" 2>/dev/null; then
+  if ssh -i ${SSH_KEY_PATH:-~/.ssh/id_rsa_aws} -o StrictHostKeyChecking=no -o BatchMode=yes -o ConnectTimeout=10 ${ANSIBLE_USER:-ubuntu}@"$IP" echo "SSH Ready" 2>/dev/null; then
     echo "✅ SSH is available!"
     break
   fi
@@ -82,12 +97,12 @@ mkdir -p ../ansible/inventory
 echo "Updating Ansible inventory with IP: $IP"
 cat > ../ansible/inventory/hosts << EOF
 [iot_servers]
-awiots6 ansible_host=$IP
+${TARGET_HOSTNAME:-awiots6} ansible_host=$IP
 
 [all:vars]
 ansible_python_interpreter=/usr/bin/python3
-ansible_user=ubuntu
-ansible_ssh_private_key_file=~/.ssh/id_rsa_aws
+ansible_user=${ANSIBLE_USER:-ubuntu}
+ansible_ssh_private_key_file=${SSH_KEY_PATH:-~/.ssh/id_rsa_aws}
 EOF
 
 echo "✅ SSH ready and inventory updated"

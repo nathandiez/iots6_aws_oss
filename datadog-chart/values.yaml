@@ -1,0 +1,15 @@
+datadog:
+  datadog:
+    apiKeyExistingSecret: datadog-secret
+    site: datadoghq.com
+    clusterName: iots6-eks
+    logs:
+      enabled: true
+      containerCollectAll: true
+    processAgent:
+      processCollection: true
+    kubeStateMetricsCore:
+      enabled: true
+  clusterAgent:
+    enabled: true
+    replicas: 2

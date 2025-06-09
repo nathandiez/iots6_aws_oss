@@ -3,13 +3,13 @@
 - name: Deploy and configure TimescaleDB
   hosts: iot_servers
   vars:
-    timescaledb_container_name: timescaledb
-    postgres_db: iotdb
-    postgres_user: iotuser
-    postgres_password: iotpass
+    timescaledb_container_name: "{{ lookup('env', 'TIMESCALE_CONTAINER_NAME') | default('timescaledb') }}"
+    postgres_db: "{{ lookup('env', 'POSTGRES_DB') }}"
+    postgres_user: "{{ lookup('env', 'POSTGRES_USER') }}"
+    postgres_password: "{{ lookup('env', 'POSTGRES_PASSWORD') }}"
     postgres_port: 5432
-    timescale_data_dir: /home/{{ ansible_user | default('nathan') }}/timescaledb_data
-    schema_dir: /home/{{ ansible_user | default('nathan') }}/timescaledb_schema
+    timescale_data_dir: /home/{{ ansible_user | default(lookup('env', 'ANSIBLE_USER') | default('ubuntu')) }}/timescaledb_data
+    schema_dir: /home/{{ ansible_user | default(lookup('env', 'ANSIBLE_USER') | default('ubuntu')) }}/timescaledb_schema
 
   tasks:
     - name: Create directories
@@ -49,9 +49,9 @@
           CREATE INDEX IF NOT EXISTS idx_sensor_data_device_id ON sensor_data(device_id);
           CREATE INDEX IF NOT EXISTS idx_sensor_data_event_type ON sensor_data(event_type);
           CREATE INDEX IF NOT EXISTS idx_sensor_data_sensor_type ON sensor_data(sensor_type);
-          GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA public TO iotuser;
-          GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public TO iotuser;
-          GRANT ALL PRIVILEGES ON SCHEMA public TO iotuser;
+          GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA public TO {{ postgres_user }};
+          GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public TO {{ postgres_user }};
+          GRANT ALL PRIVILEGES ON SCHEMA public TO {{ postgres_user }};
         mode: '0644'
       become: yes
 

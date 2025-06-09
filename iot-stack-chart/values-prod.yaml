@@ -1,6 +1,7 @@
 # IoT Stack Configuration - Production
 global:
   namespace: iots6-prod
+  project: iots6
 
 # TimescaleDB Configuration
 timescaledb:
@@ -16,9 +17,6 @@ timescaledb:
     enabled: true
     storageClass: "gp3"
     size: 50Gi  # Large for production
-  database:
-    name: iotdb
-    user: iotuser
   resources:
     requests:
       memory: "1Gi"  # Production resources
@@ -63,8 +61,6 @@ grafana:
     enabled: true
     storageClass: "gp3"
     size: 10Gi
-  admin:
-    user: admin
   resources:
     requests:
       memory: "512Mi"

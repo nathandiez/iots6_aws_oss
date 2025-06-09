@@ -7,7 +7,7 @@
     mosquitto_config_dir: /etc/mosquitto
     mosquitto_data_dir: /var/lib/mosquitto
     mosquitto_log_dir: /var/log/mosquitto
-    mosquitto_container_name: mosquitto
+    mosquitto_container_name: "{{ lookup('env', 'MQTT_CONTAINER_NAME') | default('mosquitto') }}"
 
   tasks:
     # --------------------------------------------------------------------------

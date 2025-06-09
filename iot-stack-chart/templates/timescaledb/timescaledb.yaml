@@ -1,18 +1,6 @@
 {{- if .Values.timescaledb.enabled }}
 ---
 apiVersion: v1
-kind: Secret
-metadata:
-  name: timescaledb-secret
-  namespace: {{ .Values.global.namespace }}
-type: Opaque
-data:
-  POSTGRES_DB: {{ .Values.timescaledb.database.name | b64enc }}
-  POSTGRES_USER: {{ .Values.timescaledb.database.user | b64enc }}
-  POSTGRES_PASSWORD: {{ randAlphaNum 16 | b64enc }}
-
----
-apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
   name: timescaledb-pvc
@@ -72,7 +60,7 @@ spec:
         - containerPort: {{ .Values.timescaledb.service.port }}
         envFrom:
         - secretRef:
-            name: timescaledb-secret
+            name: iot-secrets
         env:
         - name: PGDATA
           value: /var/lib/postgresql/data/pgdata
@@ -86,32 +74,10 @@ spec:
             command:
               - /bin/sh
               - -c
-              - pg_isready -U {{ .Values.timescaledb.database.user }} -d {{ .Values.timescaledb.database.name }}
+              - pg_isready -U $(POSTGRES_USER) -d $(POSTGRES_DB)
           initialDelaySeconds: 30
           periodSeconds: 10
       volumes:
       - name: timescaledb-storage
         persistentVolumeClaim:
           claimName: timescaledb-pvc
-
----
-apiVersion: v1
-kind: Service
-metadata:
-  name: timescaledb
-  namespace: {{ .Values.global.namespace }}
-  labels:
-    app: timescaledb
-    chart: {{ include "iot-stack-chart.chart" . }}
-    release: {{ .Release.Name }}
-spec:
-  type: {{ .Values.timescaledb.service.type }}
-  ports:
-  - port: {{ .Values.timescaledb.service.port }}
-    targetPort: {{ .Values.timescaledb.service.port }}
-    protocol: TCP
-    name: postgres
-  selector:
-    app: timescaledb
-    release: {{ .Release.Name }}
-{{- end }}

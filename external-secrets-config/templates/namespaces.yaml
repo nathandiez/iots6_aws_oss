@@ -1,0 +1,11 @@
+{{- range .Values.global.environments }}
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: {{ $.Values.global.projectName }}-{{ . }}
+  labels:
+    environment: {{ . }}
+    project: {{ $.Values.global.projectName }}
+    managed-by: helm
+{{- end }}

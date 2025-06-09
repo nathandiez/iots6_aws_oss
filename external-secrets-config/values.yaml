@@ -1,0 +1,28 @@
+global:
+  projectName: iots6
+  awsRegion: us-east-1
+  environments:
+    - dev
+    - staging
+    - prod
+
+clusterSecretStore:
+  name: aws-parameter-store
+  
+externalSecrets:
+  refreshInterval: 1h
+  secretName: iot-secrets
+  
+parameterStore:
+  pathPrefix: iots6
+  secrets:
+    - secretKey: POSTGRES_DB
+      remoteKey: postgres/db
+    - secretKey: POSTGRES_USER
+      remoteKey: postgres/user
+    - secretKey: POSTGRES_PASSWORD
+      remoteKey: postgres/password
+    - secretKey: GRAFANA_ADMIN_USER
+      remoteKey: grafana/admin-user
+    - secretKey: GRAFANA_ADMIN_PASSWORD
+      remoteKey: grafana/admin-password

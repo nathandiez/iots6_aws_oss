@@ -1,6 +1,7 @@
 # IoT Stack Configuration
 global:
   namespace: iots6
+  project: iots6
 
 # TimescaleDB Configuration
 timescaledb:
@@ -18,12 +19,6 @@ timescaledb:
     enabled: true
     storageClass: "gp3"
     size: 10Gi
-  
-  database:
-    name: iotdb
-    user: iotuser
-    # Password will be generated automatically
-    existingSecret: ""
   
   resources:
     requests:
@@ -74,11 +69,6 @@ grafana:
     enabled: true
     storageClass: "gp3"
     size: 2Gi
-    
-  admin:
-    user: admin
-    # Password will be generated automatically
-    existingSecret: ""
     
   resources:
     requests:
