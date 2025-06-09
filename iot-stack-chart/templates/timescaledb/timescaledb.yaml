@@ -81,3 +81,25 @@ spec:
       - name: timescaledb-storage
         persistentVolumeClaim:
           claimName: timescaledb-pvc
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: timescaledb-service
+  namespace: {{ .Values.global.namespace }}
+  labels:
+    app: timescaledb
+    chart: {{ include "iot-stack-chart.chart" . }}
+    release: {{ .Release.Name }}
+spec:
+  type: {{ .Values.timescaledb.service.type }}
+  ports:
+  - port: {{ .Values.timescaledb.service.port }}
+    targetPort: {{ .Values.timescaledb.service.port }}
+    protocol: TCP
+    name: postgres
+  selector:
+    app: timescaledb
+    release: {{ .Release.Name }}
+{{- end }}
