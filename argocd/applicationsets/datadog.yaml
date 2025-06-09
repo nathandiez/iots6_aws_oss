@@ -1,0 +1,30 @@
+apiVersion: argoproj.io/v1alpha1
+kind: ApplicationSet
+metadata:
+  name: datadog-monitoring
+  namespace: argocd
+spec:
+  generators:
+  - list:
+      elements:
+      - name: datadog
+        namespace: datadog
+        cluster: https://kubernetes.default.svc
+  template:
+    metadata:
+      name: 'datadog-monitoring'
+    spec:
+      project: default
+      source:
+        repoURL: https://github.com/nathandiez/iots6_aws_oss.git
+        targetRevision: HEAD
+        path: datadog-chart
+      destination:
+        server: '{{cluster}}'
+        namespace: '{{namespace}}'
+      syncPolicy:
+        automated:
+          prune: true
+          selfHeal: true
+        syncOptions:
+        - CreateNamespace=true

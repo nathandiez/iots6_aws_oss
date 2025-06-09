@@ -113,12 +113,12 @@ force_delete_enis() {
     fi
 }
 
-# Function to clean up security group rules and delete security groups
+# Improved function to clean up security group rules and delete security groups
 clean_security_group_rules() {
     local vpc_id=$1
     echo "🔧 Cleaning security group rules in VPC: $vpc_id"
     
-    # Get all security groups in VPC
+    # Get all security groups in VPC (excluding default)
     SG_IDS=$(aws ec2 describe-security-groups \
         --filters "Name=vpc-id,Values=$vpc_id" \
         --query 'SecurityGroups[?GroupName!=`default`].GroupId' \
@@ -127,31 +127,121 @@ clean_security_group_rules() {
     if [[ -n "$SG_IDS" && "$SG_IDS" != "None" ]]; then
         echo "$SG_IDS" | tr '\t' '\n' | while read sg; do
             if [[ -n "$sg" && "$sg" != "None" ]]; then
-                echo "  Revoking all rules from security group: $sg"
-                # Revoke all ingress rules
-                aws ec2 revoke-security-group-ingress \
-                    --group-id "$sg" \
-                    --ip-permissions "$(aws ec2 describe-security-groups --group-ids "$sg" --query 'SecurityGroups[0].IpPermissions' 2>/dev/null || echo '[]')" \
-                    2>/dev/null || true
-                # Revoke all egress rules
-                aws ec2 revoke-security-group-egress \
-                    --group-id "$sg" \
-                    --ip-permissions "$(aws ec2 describe-security-groups --group-ids "$sg" --query 'SecurityGroups[0].IpPermissionsEgress' 2>/dev/null || echo '[]')" \
-                    2>/dev/null || true
+                echo "  Processing security group: $sg"
+                
+                # Get and revoke ingress rules - with better error handling
+                echo "    Revoking ingress rules..."
+                INGRESS_RULES=$(aws ec2 describe-security-groups \
+                    --group-ids "$sg" \
+                    --query 'SecurityGroups[0].IpPermissions' \
+                    --output json 2>/dev/null || echo '[]')
+                
+                if [[ "$INGRESS_RULES" != "[]" && "$INGRESS_RULES" != "null" ]]; then
+                    aws ec2 revoke-security-group-ingress \
+                        --group-id "$sg" \
+                        --ip-permissions "$INGRESS_RULES" \
+                        >/dev/null 2>&1 || echo "    (Ingress rules already cleared or failed)"
+                fi
+                
+                # Get and revoke egress rules - with better error handling  
+                echo "    Revoking egress rules..."
+                EGRESS_RULES=$(aws ec2 describe-security-groups \
+                    --group-ids "$sg" \
+                    --query 'SecurityGroups[0].IpPermissionsEgress' \
+                    --output json 2>/dev/null || echo '[]')
+                
+                if [[ "$EGRESS_RULES" != "[]" && "$EGRESS_RULES" != "null" ]]; then
+                    aws ec2 revoke-security-group-egress \
+                        --group-id "$sg" \
+                        --ip-permissions "$EGRESS_RULES" \
+                        >/dev/null 2>&1 || echo "    (Egress rules already cleared or failed)"
+                fi
+                
+                # Small delay to avoid API throttling
+                sleep 1
             fi
         done
         
-        # Wait a moment for rules to be processed
-        sleep 5
+        # Wait for rules to be processed
+        echo "  Waiting for security group rules to be processed..."
+        sleep 10
         
-        # Now try to delete the security groups
+        # Now try to delete the security groups with retries
         echo "🗑️  Deleting security groups..."
         echo "$SG_IDS" | tr '\t' '\n' | while read sg; do
             if [[ -n "$sg" && "$sg" != "None" ]]; then
-                echo "  Deleting security group: $sg"
-                aws ec2 delete-security-group --group-id "$sg" 2>/dev/null || true
+                echo "  Attempting to delete security group: $sg"
+                
+                # Retry deletion up to 3 times
+                for attempt in 1 2 3; do
+                    if aws ec2 delete-security-group --group-id "$sg" >/dev/null 2>&1; then
+                        echo "    ✅ Deleted successfully"
+                        break
+                    else
+                        if [[ $attempt -lt 3 ]]; then
+                            echo "    ⏳ Attempt $attempt failed, retrying in 5 seconds..."
+                            sleep 5
+                        else
+                            echo "    ⚠️  Failed to delete after 3 attempts (may have dependencies)"
+                        fi
+                    fi
+                done
             fi
         done
+    fi
+}
+
+# Improved function to handle K8S ELB security groups without hanging
+clean_k8s_elb_security_groups() {
+    local vpc_id=$1
+    echo "🔧 Cleaning up Kubernetes ELB security groups..."
+    
+    K8S_SGS=$(aws ec2 describe-security-groups \
+        --filters "Name=vpc-id,Values=$vpc_id" "Name=group-name,Values=k8s-elb-*" \
+        --query 'SecurityGroups[].GroupId' \
+        --output text 2>/dev/null || echo "")
+        
+    if [[ -n "$K8S_SGS" && "$K8S_SGS" != "None" ]]; then
+        echo "$K8S_SGS" | tr '\t' '\n' | while read sg; do
+            if [[ -n "$sg" && "$sg" != "None" ]]; then
+                echo "  🗑️  Processing Kubernetes ELB security group: $sg"
+                
+                # Clear ingress rules without showing output
+                echo "    Clearing ingress rules..."
+                INGRESS_RULES=$(aws ec2 describe-security-groups \
+                    --group-ids "$sg" \
+                    --query 'SecurityGroups[0].IpPermissions' \
+                    --output json 2>/dev/null || echo '[]')
+                
+                if [[ "$INGRESS_RULES" != "[]" && "$INGRESS_RULES" != "null" ]]; then
+                    aws ec2 revoke-security-group-ingress \
+                        --group-id "$sg" \
+                        --ip-permissions "$INGRESS_RULES" \
+                        >/dev/null 2>&1 || true
+                fi
+                
+                # Clear egress rules without showing output
+                echo "    Clearing egress rules..."
+                EGRESS_RULES=$(aws ec2 describe-security-groups \
+                    --group-ids "$sg" \
+                    --query 'SecurityGroups[0].IpPermissionsEgress' \
+                    --output json 2>/dev/null || echo '[]')
+                
+                if [[ "$EGRESS_RULES" != "[]" && "$EGRESS_RULES" != "null" ]]; then
+                    aws ec2 revoke-security-group-egress \
+                        --group-id "$sg" \
+                        --ip-permissions "$EGRESS_RULES" \
+                        >/dev/null 2>&1 || true
+                fi
+                
+                sleep 2
+                
+                # Try to delete the security group
+                echo "    Deleting security group..."
+                aws ec2 delete-security-group --group-id "$sg" >/dev/null 2>&1 || echo "    (Failed to delete - may have dependencies)"
+            fi
+        done
+        wait_for_resource_deletion "Kubernetes ELB security groups" 10
     fi
 }
 
@@ -227,30 +317,19 @@ if [[ -n "$VPC_ID" ]]; then
    fi
    
    # Clean up any Kubernetes-specific security groups that might be lingering
+   # Use manual timeout since macOS doesn't have timeout command
    echo "🔧 Cleaning up Kubernetes ELB security groups..."
-   K8S_SGS=$(aws ec2 describe-security-groups \
-       --filters "Name=vpc-id,Values=$VPC_ID" "Name=group-name,Values=k8s-elb-*" \
-       --query 'SecurityGroups[].GroupId' \
-       --output text 2>/dev/null || echo "")
-   if [[ -n "$K8S_SGS" && "$K8S_SGS" != "None" ]]; then
-       echo "$K8S_SGS" | tr '\t' '\n' | while read sg; do
-           if [[ -n "$sg" && "$sg" != "None" ]]; then
-               echo "  🗑️  Deleting Kubernetes ELB security group: $sg"
-               # Clear rules first
-               aws ec2 revoke-security-group-ingress \
-                   --group-id "$sg" \
-                   --ip-permissions "$(aws ec2 describe-security-groups --group-ids "$sg" --query 'SecurityGroups[0].IpPermissions' 2>/dev/null || echo '[]')" \
-                   2>/dev/null || true
-               aws ec2 revoke-security-group-egress \
-                   --group-id "$sg" \
-                   --ip-permissions "$(aws ec2 describe-security-groups --group-ids "$sg" --query 'SecurityGroups[0].IpPermissionsEgress' 2>/dev/null || echo '[]')" \
-                   2>/dev/null || true
-               sleep 2
-               aws ec2 delete-security-group --group-id "$sg" 2>/dev/null || true
-           fi
-       done
-       wait_for_resource_deletion "Kubernetes ELB security groups" 10
-   fi
+   (
+       # Run in subshell with manual timeout
+       clean_k8s_elb_security_groups "$VPC_ID" &
+       CLEANUP_PID=$!
+       sleep 60
+       if kill -0 $CLEANUP_PID 2>/dev/null; then
+           kill $CLEANUP_PID 2>/dev/null
+           echo "Security group cleanup timed out, continuing..."
+       fi
+       wait $CLEANUP_PID 2>/dev/null || true
+   )
    
    # Initial ENI cleanup
    force_delete_enis "$VPC_ID"
@@ -268,7 +347,7 @@ if [[ -n "$VPC_ID" ]]; then
        echo "$NAT_GWS" | tr '\t' '\n' | while read nat; do
            if [[ -n "$nat" && "$nat" != "None" ]]; then
                echo "  🗑️  Deleting NAT Gateway: $nat"
-               aws ec2 delete-nat-gateway --nat-gateway-id "$nat" 2>/dev/null || true
+               aws ec2 delete-nat-gateway --nat-gateway-id "$nat" >/dev/null 2>&1 || true
            fi
        done
        wait_for_resource_deletion "NAT Gateways" 60
@@ -368,10 +447,20 @@ if [[ -f "terraform.tfstate" ]]; then
      helm uninstall external-secrets -n external-secrets-system 2>/dev/null || true
      kubectl delete namespace external-secrets-system --timeout=60s 2>/dev/null || true
      
-     # Uninstall ArgoCD
+     # Uninstall ArgoCD with timeout
      echo "Uninstalling ArgoCD..."
-     kubectl delete -n ${ARGOCD_NAMESPACE} -f "https://raw.githubusercontent.com/argoproj/argo-cd/${ARGOCD_VERSION}/manifests/install.yaml" 2>/dev/null || true
-     kubectl delete namespace ${ARGOCD_NAMESPACE} --timeout=60s 2>/dev/null || true
+     (
+         # Run ArgoCD deletion in background with timeout
+         kubectl delete -n ${ARGOCD_NAMESPACE} -f "https://raw.githubusercontent.com/argoproj/argo-cd/${ARGOCD_VERSION}/manifests/install.yaml" --timeout=60s &
+         ARGOCD_PID=$!
+         sleep 60
+         if kill -0 $ARGOCD_PID 2>/dev/null; then
+             kill $ARGOCD_PID 2>/dev/null
+             echo "ArgoCD deletion timed out, continuing..."
+         fi
+         wait $ARGOCD_PID 2>/dev/null || true
+     ) 2>/dev/null || true
+     kubectl delete namespace ${ARGOCD_NAMESPACE} --timeout=30s 2>/dev/null || true
      
      echo "Deleting all namespaced resources..."
      kubectl delete all --all --all-namespaces --timeout=60s 2>/dev/null || true
@@ -408,7 +497,7 @@ if [[ -f "terraform.tfstate" ]]; then
    
    # Clean up EKS addons before destroying cluster
    echo "Cleaning up EKS addons..."
-   aws eks delete-addon --cluster-name "$TERRAFORM_CLUSTER_NAME" --addon-name aws-ebs-csi-driver 2>/dev/null || true
+   aws eks delete-addon --cluster-name "$TERRAFORM_CLUSTER_NAME" --addon-name aws-ebs-csi-driver >/dev/null 2>&1 || true
    
    # Clean up External Secrets IAM resources
    echo "Cleaning up External Secrets IAM resources..."
@@ -486,15 +575,22 @@ if [[ -f "terraform.tfstate" ]]; then
              echo "$REMAINING_SGS" | tr '\t' '\n' | while read sg; do
                  if [[ -n "$sg" && "$sg" != "None" ]]; then
                      echo "  🗑️  Force deleting security group: $sg"
-                     # First try to clear any remaining rules
-                     aws ec2 revoke-security-group-ingress \
-                         --group-id "$sg" \
-                         --ip-permissions "$(aws ec2 describe-security-groups --group-ids "$sg" --query 'SecurityGroups[0].IpPermissions' 2>/dev/null || echo '[]')" \
-                         2>/dev/null || true
-                     aws ec2 revoke-security-group-egress \
-                         --group-id "$sg" \
-                         --ip-permissions "$(aws ec2 describe-security-groups --group-ids "$sg" --query 'SecurityGroups[0].IpPermissionsEgress' 2>/dev/null || echo '[]')" \
-                         2>/dev/null || true
+                     # First try to clear any remaining rules with suppressed output
+                     INGRESS_RULES=$(aws ec2 describe-security-groups --group-ids "$sg" --query 'SecurityGroups[0].IpPermissions' --output json 2>/dev/null || echo '[]')
+                     if [[ "$INGRESS_RULES" != "[]" && "$INGRESS_RULES" != "null" ]]; then
+                         aws ec2 revoke-security-group-ingress \
+                             --group-id "$sg" \
+                             --ip-permissions "$INGRESS_RULES" \
+                             >/dev/null 2>&1 || true
+                     fi
+                     
+                     EGRESS_RULES=$(aws ec2 describe-security-groups --group-ids "$sg" --query 'SecurityGroups[0].IpPermissionsEgress' --output json 2>/dev/null || echo '[]')
+                     if [[ "$EGRESS_RULES" != "[]" && "$EGRESS_RULES" != "null" ]]; then
+                         aws ec2 revoke-security-group-egress \
+                             --group-id "$sg" \
+                             --ip-permissions "$EGRESS_RULES" \
+                             >/dev/null 2>&1 || true
+                     fi
                      sleep 2
                      # Then delete the security group
                      aws ec2 delete-security-group --group-id "$sg" 2>/dev/null || true
@@ -528,7 +624,7 @@ if [[ -n "$VPC_ID" ]]; then
         # One more aggressive ENI cleanup
         force_delete_enis "$VPC_ID"
         
-        # One more pass at security groups
+        # One more pass at security groups with suppressed output
         REMAINING_SGS=$(aws ec2 describe-security-groups \
             --filters "Name=vpc-id,Values=$VPC_ID" \
             --query 'SecurityGroups[?GroupName!=`default`].GroupId' \
@@ -537,15 +633,22 @@ if [[ -n "$VPC_ID" ]]; then
             echo "$REMAINING_SGS" | tr '\t' '\n' | while read sg; do
                 if [[ -n "$sg" && "$sg" != "None" ]]; then
                     echo "  🗑️  Final cleanup - deleting security group: $sg"
-                    # Clear any remaining rules first
-                    aws ec2 revoke-security-group-ingress \
-                        --group-id "$sg" \
-                        --ip-permissions "$(aws ec2 describe-security-groups --group-ids "$sg" --query 'SecurityGroups[0].IpPermissions' 2>/dev/null || echo '[]')" \
-                        2>/dev/null || true
-                    aws ec2 revoke-security-group-egress \
-                        --group-id "$sg" \
-                        --ip-permissions "$(aws ec2 describe-security-groups --group-ids "$sg" --query 'SecurityGroups[0].IpPermissionsEgress' 2>/dev/null || echo '[]')" \
-                        2>/dev/null || true
+                    # Clear any remaining rules first with suppressed output
+                    INGRESS_RULES=$(aws ec2 describe-security-groups --group-ids "$sg" --query 'SecurityGroups[0].IpPermissions' --output json 2>/dev/null || echo '[]')
+                    if [[ "$INGRESS_RULES" != "[]" && "$INGRESS_RULES" != "null" ]]; then
+                        aws ec2 revoke-security-group-ingress \
+                            --group-id "$sg" \
+                            --ip-permissions "$INGRESS_RULES" \
+                            >/dev/null 2>&1 || true
+                    fi
+                    
+                    EGRESS_RULES=$(aws ec2 describe-security-groups --group-ids "$sg" --query 'SecurityGroups[0].IpPermissionsEgress' --output json 2>/dev/null || echo '[]')
+                    if [[ "$EGRESS_RULES" != "[]" && "$EGRESS_RULES" != "null" ]]; then
+                        aws ec2 revoke-security-group-egress \
+                            --group-id "$sg" \
+                            --ip-permissions "$EGRESS_RULES" \
+                            >/dev/null 2>&1 || true
+                    fi
                     sleep 2
                     aws ec2 delete-security-group --group-id "$sg" 2>/dev/null || true
                 fi
