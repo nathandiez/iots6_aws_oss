@@ -25,6 +25,8 @@ metadata:
     release: {{ .Release.Name }}
 spec:
   replicas: 1
+  strategy:
+    type: Recreate  # Ensures old pod is terminated before new one starts
   selector:
     matchLabels:
       app: timescaledb
