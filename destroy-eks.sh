@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# destroy-eks.sh - Complete EKS teardown script
+# destroy-eks.sh - Complete EKS teardown script with enhanced cleanup
 set -e
 
 # Load environment variables from .env
@@ -62,6 +62,99 @@ if [[ -f "./set-aws-env.sh" ]]; then
     source ./set-aws-env.sh
 fi
 
+# Function to wait for resources to be released
+wait_for_resource_deletion() {
+    local resource_type=$1
+    local wait_time=${2:-30}
+    echo "⏳ Waiting ${wait_time} seconds for ${resource_type} to be released..."
+    sleep $wait_time
+}
+
+# Function to force delete ENIs
+force_delete_enis() {
+    local vpc_id=$1
+    echo "🔧 Force deleting ENIs in VPC: $vpc_id"
+    
+    # Get all ENIs in the VPC
+    ALL_ENIS=$(aws ec2 describe-network-interfaces \
+        --filters "Name=vpc-id,Values=$vpc_id" \
+        --query 'NetworkInterfaces[].NetworkInterfaceId' \
+        --output text 2>/dev/null || echo "")
+    
+    if [[ -n "$ALL_ENIS" && "$ALL_ENIS" != "None" ]]; then
+        echo "$ALL_ENIS" | tr '\t' '\n' | while read eni; do
+            if [[ -n "$eni" && "$eni" != "None" ]]; then
+                # Get ENI details
+                ENI_INFO=$(aws ec2 describe-network-interfaces \
+                    --network-interface-ids "$eni" \
+                    --query 'NetworkInterfaces[0].[Status,Description,Attachment.AttachmentId,Attachment.InstanceId]' \
+                    --output text 2>/dev/null || echo "")
+                
+                ENI_STATUS=$(echo "$ENI_INFO" | awk '{print $1}')
+                ENI_DESC=$(echo "$ENI_INFO" | awk '{print $2}')
+                ATTACHMENT_ID=$(echo "$ENI_INFO" | awk '{print $3}')
+                INSTANCE_ID=$(echo "$ENI_INFO" | awk '{print $4}')
+                
+                echo "  Processing ENI: $eni (Status: $ENI_STATUS, Desc: $ENI_DESC)"
+                
+                # If attached, try to detach first
+                if [[ "$ENI_STATUS" == "in-use" && "$ATTACHMENT_ID" != "None" && -n "$ATTACHMENT_ID" ]]; then
+                    echo "    Detaching ENI..."
+                    aws ec2 detach-network-interface --attachment-id "$ATTACHMENT_ID" --force 2>/dev/null || true
+                    sleep 5
+                fi
+                
+                # Try to delete
+                echo "    Deleting ENI..."
+                aws ec2 delete-network-interface --network-interface-id "$eni" 2>/dev/null || true
+            fi
+        done
+        wait_for_resource_deletion "ENIs" 10
+    fi
+}
+
+# Function to clean up security group rules and delete security groups
+clean_security_group_rules() {
+    local vpc_id=$1
+    echo "🔧 Cleaning security group rules in VPC: $vpc_id"
+    
+    # Get all security groups in VPC
+    SG_IDS=$(aws ec2 describe-security-groups \
+        --filters "Name=vpc-id,Values=$vpc_id" \
+        --query 'SecurityGroups[?GroupName!=`default`].GroupId' \
+        --output text 2>/dev/null || echo "")
+    
+    if [[ -n "$SG_IDS" && "$SG_IDS" != "None" ]]; then
+        echo "$SG_IDS" | tr '\t' '\n' | while read sg; do
+            if [[ -n "$sg" && "$sg" != "None" ]]; then
+                echo "  Revoking all rules from security group: $sg"
+                # Revoke all ingress rules
+                aws ec2 revoke-security-group-ingress \
+                    --group-id "$sg" \
+                    --ip-permissions "$(aws ec2 describe-security-groups --group-ids "$sg" --query 'SecurityGroups[0].IpPermissions' 2>/dev/null || echo '[]')" \
+                    2>/dev/null || true
+                # Revoke all egress rules
+                aws ec2 revoke-security-group-egress \
+                    --group-id "$sg" \
+                    --ip-permissions "$(aws ec2 describe-security-groups --group-ids "$sg" --query 'SecurityGroups[0].IpPermissionsEgress' 2>/dev/null || echo '[]')" \
+                    2>/dev/null || true
+            fi
+        done
+        
+        # Wait a moment for rules to be processed
+        sleep 5
+        
+        # Now try to delete the security groups
+        echo "🗑️  Deleting security groups..."
+        echo "$SG_IDS" | tr '\t' '\n' | while read sg; do
+            if [[ -n "$sg" && "$sg" != "None" ]]; then
+                echo "  Deleting security group: $sg"
+                aws ec2 delete-security-group --group-id "$sg" 2>/dev/null || true
+            fi
+        done
+    fi
+}
+
 echo ""
 echo "🧹 Cleaning up leftover AWS resources that could block deletion..."
 
@@ -112,88 +205,73 @@ if [[ -n "$VPC_ID" ]]; then
    echo "Checking for lingering load balancers..."
    LB_ARNS=$(aws elbv2 describe-load-balancers --query "LoadBalancers[?VpcId=='$VPC_ID'].LoadBalancerArn" --output text 2>/dev/null || echo "")
    if [[ -n "$LB_ARNS" && "$LB_ARNS" != "None" ]]; then
-       echo "$LB_ARNS" | while read arn; do
+       echo "$LB_ARNS" | tr '\t' '\n' | while read arn; do
            if [[ -n "$arn" && "$arn" != "None" ]]; then
                echo "  🗑️  Deleting ELBv2: $arn"
                aws elbv2 delete-load-balancer --load-balancer-arn "$arn" 2>/dev/null || true
            fi
        done
+       wait_for_resource_deletion "Load Balancers" 30
    fi
    
    # Delete classic ELBs
    ELB_NAMES=$(aws elb describe-load-balancers --query "LoadBalancerDescriptions[?VPCId=='$VPC_ID'].LoadBalancerName" --output text 2>/dev/null || echo "")
    if [[ -n "$ELB_NAMES" && "$ELB_NAMES" != "None" ]]; then
-       echo "$ELB_NAMES" | while read name; do
+       echo "$ELB_NAMES" | tr '\t' '\n' | while read name; do
            if [[ -n "$name" && "$name" != "None" ]]; then
                echo "  🗑️  Deleting ELB: $name"
                aws elb delete-load-balancer --load-balancer-name "$name" 2>/dev/null || true
            fi
        done
+       wait_for_resource_deletion "Classic Load Balancers" 20
    fi
    
-   # Find and delete leftover Kubernetes ENIs
-   echo "Cleaning up leftover Kubernetes network interfaces..."
-   K8S_ENIS=$(aws ec2 describe-network-interfaces \
-       --filters "Name=vpc-id,Values=$VPC_ID" "Name=status,Values=available" \
-       --query 'NetworkInterfaces[?contains(Description, `aws-K8S`) || contains(Description, `eks`)].NetworkInterfaceId' \
+   # Clean up any Kubernetes-specific security groups that might be lingering
+   echo "🔧 Cleaning up Kubernetes ELB security groups..."
+   K8S_SGS=$(aws ec2 describe-security-groups \
+       --filters "Name=vpc-id,Values=$VPC_ID" "Name=group-name,Values=k8s-elb-*" \
+       --query 'SecurityGroups[].GroupId' \
        --output text 2>/dev/null || echo "")
-   if [[ -n "$K8S_ENIS" && "$K8S_ENIS" != "None" ]]; then
-       echo "$K8S_ENIS" | while read eni; do
-           if [[ -n "$eni" && "$eni" != "None" ]]; then
-               echo "  🗑️  Deleting Kubernetes ENI: $eni"
-               aws ec2 delete-network-interface --network-interface-id "$eni" 2>/dev/null || true
-           fi
-       done
-   fi
-   
-   # Also check for any other available ENIs that might be blocking subnet deletion
-   echo "Checking for any other ENIs that might block subnet deletion..."
-   ALL_ENIS=$(aws ec2 describe-network-interfaces \
-       --filters "Name=vpc-id,Values=$VPC_ID" "Name=status,Values=available" \
-       --query 'NetworkInterfaces[].NetworkInterfaceId' \
-       --output text 2>/dev/null || echo "")
-   if [[ -n "$ALL_ENIS" && "$ALL_ENIS" != "None" ]]; then
-       echo "$ALL_ENIS" | while read eni; do
-           if [[ -n "$eni" && "$eni" != "None" ]]; then
-               echo "  🗑️  Deleting available ENI: $eni"
-               aws ec2 delete-network-interface --network-interface-id "$eni" 2>/dev/null || true
-           fi
-       done
-   fi
-
-   # Clean up EKS security groups that can block VPC deletion
-   echo "Cleaning up EKS security groups..."
-   EKS_SGS=$(aws ec2 describe-security-groups \
-       --filters "Name=vpc-id,Values=$VPC_ID" \
-       --query 'SecurityGroups[?GroupName!=`default` && (contains(GroupName, `eks`) || contains(Description, `EKS`) || contains(to_string(Tags), `eks`))].GroupId' \
-       --output text 2>/dev/null || echo "")
-   if [[ -n "$EKS_SGS" && "$EKS_SGS" != "None" ]]; then
-       echo "$EKS_SGS" | while read sg; do
+   if [[ -n "$K8S_SGS" && "$K8S_SGS" != "None" ]]; then
+       echo "$K8S_SGS" | tr '\t' '\n' | while read sg; do
            if [[ -n "$sg" && "$sg" != "None" ]]; then
-               echo "  🗑️  Deleting EKS security group: $sg"
-               # First, try to revoke all ingress rules to break circular dependencies
-               aws ec2 revoke-security-group-ingress --group-id "$sg" --source-group "$sg" --protocol all 2>/dev/null || true
-               # Then delete the security group
+               echo "  🗑️  Deleting Kubernetes ELB security group: $sg"
+               # Clear rules first
+               aws ec2 revoke-security-group-ingress \
+                   --group-id "$sg" \
+                   --ip-permissions "$(aws ec2 describe-security-groups --group-ids "$sg" --query 'SecurityGroups[0].IpPermissions' 2>/dev/null || echo '[]')" \
+                   2>/dev/null || true
+               aws ec2 revoke-security-group-egress \
+                   --group-id "$sg" \
+                   --ip-permissions "$(aws ec2 describe-security-groups --group-ids "$sg" --query 'SecurityGroups[0].IpPermissionsEgress' 2>/dev/null || echo '[]')" \
+                   2>/dev/null || true
+               sleep 2
                aws ec2 delete-security-group --group-id "$sg" 2>/dev/null || true
            fi
        done
+       wait_for_resource_deletion "Kubernetes ELB security groups" 10
    fi
+   
+   # Initial ENI cleanup
+   force_delete_enis "$VPC_ID"
+   
+   # Clean up security group rules AND delete the security groups
+   clean_security_group_rules "$VPC_ID"
 
    # Clean up NAT Gateways that might be in the VPC
    echo "Checking for NAT Gateways..."
    NAT_GWS=$(aws ec2 describe-nat-gateways \
-       --filter "Name=vpc-id,Values=$VPC_ID" "Name=state,Values=available" \
+       --filter "Name=vpc-id,Values=$VPC_ID" "Name=state,Values=available,pending,deleting" \
        --query 'NatGateways[].NatGatewayId' \
        --output text 2>/dev/null || echo "")
    if [[ -n "$NAT_GWS" && "$NAT_GWS" != "None" ]]; then
-       echo "$NAT_GWS" | while read nat; do
+       echo "$NAT_GWS" | tr '\t' '\n' | while read nat; do
            if [[ -n "$nat" && "$nat" != "None" ]]; then
                echo "  🗑️  Deleting NAT Gateway: $nat"
                aws ec2 delete-nat-gateway --nat-gateway-id "$nat" 2>/dev/null || true
            fi
        done
-       echo "⏳ Waiting 30 seconds for NAT Gateway deletion..."
-       sleep 30
+       wait_for_resource_deletion "NAT Gateways" 60
    fi
 
    # Clean up Internet Gateways
@@ -203,7 +281,7 @@ if [[ -n "$VPC_ID" ]]; then
        --query 'InternetGateways[].InternetGatewayId' \
        --output text 2>/dev/null || echo "")
    if [[ -n "$IGW_IDS" && "$IGW_IDS" != "None" ]]; then
-       echo "$IGW_IDS" | while read igw; do
+       echo "$IGW_IDS" | tr '\t' '\n' | while read igw; do
            if [[ -n "$igw" && "$igw" != "None" ]]; then
                echo "  🗑️  Detaching and deleting Internet Gateway: $igw"
                aws ec2 detach-internet-gateway --internet-gateway-id "$igw" --vpc-id "$VPC_ID" 2>/dev/null || true
@@ -212,8 +290,7 @@ if [[ -n "$VPC_ID" ]]; then
        done
    fi
    
-   echo "⏳ Waiting 20 seconds for resource cleanup to complete..."
-   sleep 20
+   wait_for_resource_deletion "pre-cleanup resources" 20
    echo "✅ Pre-cleanup completed"
 else
    echo "No VPC found - skipping pre-cleanup"
@@ -322,8 +399,7 @@ if [[ -f "terraform.tfstate" ]]; then
          kubectl delete namespace $ns --timeout=60s 2>/dev/null || true
      done
      
-     echo "⏳ Waiting 30 seconds for volumes to be released..."
-     sleep 30
+     wait_for_resource_deletion "Kubernetes volumes" 30
      
      echo "Kubernetes cleanup completed (or timed out safely)"
    else
@@ -364,13 +440,77 @@ if [[ -f "terraform.tfstate" ]]; then
      "/${PROJECT_NAME}/datadog/api-key" \
      "/${PROJECT_NAME}/project/name" 2>/dev/null || true
    
-   echo "Waiting for addon deletion..."
-   sleep 10
+   wait_for_resource_deletion "addon deletion" 10
  fi
  
  # Destroy the infrastructure
  echo "Running terraform destroy..."
  terraform destroy -auto-approve
+ 
+ TERRAFORM_EXIT_CODE=$?
+ 
+ if [[ $TERRAFORM_EXIT_CODE -ne 0 ]]; then
+     echo ""
+     echo "⚠️  Terraform destroy encountered errors. Attempting additional cleanup..."
+     
+     # If we still have the VPC ID, try more aggressive cleanup
+     if [[ -n "$VPC_ID" ]]; then
+         echo "Performing aggressive VPC cleanup..."
+         
+         # Force delete all ENIs again
+         force_delete_enis "$VPC_ID"
+         
+         # Delete VPC Endpoints
+         echo "Checking for VPC Endpoints..."
+         VPC_ENDPOINTS=$(aws ec2 describe-vpc-endpoints \
+             --filters "Name=vpc-id,Values=$VPC_ID" \
+             --query 'VpcEndpoints[].VpcEndpointId' \
+             --output text 2>/dev/null || echo "")
+         if [[ -n "$VPC_ENDPOINTS" && "$VPC_ENDPOINTS" != "None" ]]; then
+             echo "$VPC_ENDPOINTS" | tr '\t' '\n' | while read endpoint; do
+                 if [[ -n "$endpoint" && "$endpoint" != "None" ]]; then
+                     echo "  🗑️  Deleting VPC Endpoint: $endpoint"
+                     aws ec2 delete-vpc-endpoints --vpc-endpoint-ids "$endpoint" 2>/dev/null || true
+                 fi
+             done
+             wait_for_resource_deletion "VPC Endpoints" 10
+         fi
+         
+         # Try to delete all security groups one more time
+         echo "Final security group cleanup..."
+         REMAINING_SGS=$(aws ec2 describe-security-groups \
+             --filters "Name=vpc-id,Values=$VPC_ID" \
+             --query 'SecurityGroups[?GroupName!=`default`].GroupId' \
+             --output text 2>/dev/null || echo "")
+         if [[ -n "$REMAINING_SGS" && "$REMAINING_SGS" != "None" ]]; then
+             echo "$REMAINING_SGS" | tr '\t' '\n' | while read sg; do
+                 if [[ -n "$sg" && "$sg" != "None" ]]; then
+                     echo "  🗑️  Force deleting security group: $sg"
+                     # First try to clear any remaining rules
+                     aws ec2 revoke-security-group-ingress \
+                         --group-id "$sg" \
+                         --ip-permissions "$(aws ec2 describe-security-groups --group-ids "$sg" --query 'SecurityGroups[0].IpPermissions' 2>/dev/null || echo '[]')" \
+                         2>/dev/null || true
+                     aws ec2 revoke-security-group-egress \
+                         --group-id "$sg" \
+                         --ip-permissions "$(aws ec2 describe-security-groups --group-ids "$sg" --query 'SecurityGroups[0].IpPermissionsEgress' 2>/dev/null || echo '[]')" \
+                         2>/dev/null || true
+                     sleep 2
+                     # Then delete the security group
+                     aws ec2 delete-security-group --group-id "$sg" 2>/dev/null || true
+                 fi
+             done
+         fi
+         
+         # Final attempt to delete the VPC
+         echo "Final VPC deletion attempt..."
+         aws ec2 delete-vpc --vpc-id "$VPC_ID" 2>/dev/null || true
+     fi
+     
+     echo ""
+     echo "Attempting terraform destroy again..."
+     terraform destroy -auto-approve -refresh=false
+ fi
  
  echo "EKS infrastructure destroyed successfully."
 else
@@ -385,15 +525,28 @@ if [[ -n "$VPC_ID" ]]; then
     if aws ec2 describe-vpcs --vpc-ids "$VPC_ID" >/dev/null 2>&1; then
         echo "VPC still exists, attempting final cleanup..."
         
+        # One more aggressive ENI cleanup
+        force_delete_enis "$VPC_ID"
+        
         # One more pass at security groups
         REMAINING_SGS=$(aws ec2 describe-security-groups \
             --filters "Name=vpc-id,Values=$VPC_ID" \
             --query 'SecurityGroups[?GroupName!=`default`].GroupId' \
             --output text 2>/dev/null || echo "")
         if [[ -n "$REMAINING_SGS" && "$REMAINING_SGS" != "None" ]]; then
-            echo "$REMAINING_SGS" | while read sg; do
+            echo "$REMAINING_SGS" | tr '\t' '\n' | while read sg; do
                 if [[ -n "$sg" && "$sg" != "None" ]]; then
                     echo "  🗑️  Final cleanup - deleting security group: $sg"
+                    # Clear any remaining rules first
+                    aws ec2 revoke-security-group-ingress \
+                        --group-id "$sg" \
+                        --ip-permissions "$(aws ec2 describe-security-groups --group-ids "$sg" --query 'SecurityGroups[0].IpPermissions' 2>/dev/null || echo '[]')" \
+                        2>/dev/null || true
+                    aws ec2 revoke-security-group-egress \
+                        --group-id "$sg" \
+                        --ip-permissions "$(aws ec2 describe-security-groups --group-ids "$sg" --query 'SecurityGroups[0].IpPermissionsEgress' 2>/dev/null || echo '[]')" \
+                        2>/dev/null || true
+                    sleep 2
                     aws ec2 delete-security-group --group-id "$sg" 2>/dev/null || true
                 fi
             done
@@ -402,6 +555,16 @@ if [[ -n "$VPC_ID" ]]; then
         # Try to delete VPC
         echo "  🗑️  Attempting to delete VPC: $VPC_ID"
         aws ec2 delete-vpc --vpc-id "$VPC_ID" 2>/dev/null || true
+        
+        # Check if VPC still exists
+        if aws ec2 describe-vpcs --vpc-ids "$VPC_ID" >/dev/null 2>&1; then
+            echo ""
+            echo "⚠️  WARNING: VPC $VPC_ID still exists. You may need to manually clean up:"
+            echo "   1. Check for remaining ENIs: aws ec2 describe-network-interfaces --filters \"Name=vpc-id,Values=$VPC_ID\""
+            echo "   2. Check for remaining security groups: aws ec2 describe-security-groups --filters \"Name=vpc-id,Values=$VPC_ID\""
+            echo "   3. Check AWS Console for any resources we might have missed"
+            echo ""
+        fi
     fi
 fi
 
