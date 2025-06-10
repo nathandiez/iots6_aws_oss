@@ -1,7 +1,7 @@
 datadog:
   datadog:
     apiKeyExistingSecret: datadog-secret
-    site: datadoghq.com
+    site: us5.datadoghq.com
     clusterName: iots6-eks
     logs:
       enabled: true
