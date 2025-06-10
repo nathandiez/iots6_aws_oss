@@ -5,10 +5,11 @@ A complete IoT monitoring platform that combines AWS cloud infrastructure with o
 ## Quick Start
 
 1. Clone the repository
-2. Install prerequisites (AWS CLI, Terraform, kubectl, Helm)
+2. Install prerequisites (AWS CLI, Terraform, kubectl, Helm, Ansible)
 3. Run `aws configure` to authenticate with AWS
-4. Copy and configure environment: `cp .env.example .env`
-5. Deploy: `./deploy-eks.sh` (GitOps/Kubernetes) or `./deploy.sh` (VM)
+4. Create a Datadog API key at https://us5.datadoghq.com/organization-settings/api-keys
+5. Copy `cp .env.example .env` and configure all settings (passwords, Datadog API key, etc.)
+6. Deploy: `./deploy-eks.sh` (GitOps/Kubernetes) or `./deploy.sh` (VM)
 
 ## Deployment Options
 
@@ -88,6 +89,8 @@ Processes sensor data from IoT devices through a complete monitoring stack:
 - [Ansible](https://docs.ansible.com/ansible/latest/installation_guide/intro_installation.html) (for VM deployment)
 - Active AWS account with appropriate permissions
 - Datadog account (free tier available) for infrastructure monitoring
+  - Create an API key at https://us5.datadoghq.com/organization-settings/api-keys
+  - Add to `.env` as `DATADOG_API_KEY` and set `DATADOG_SITE=us5.datadoghq.com`
 
 ## Access After Deployment
 
